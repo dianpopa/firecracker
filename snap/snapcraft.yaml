@@ -1,0 +1,28 @@
+name: firecracker
+version: git
+summary: Secure and fast microVMs.
+description: Secure and fast microVMs for serverless computing.
+
+confinement: devmode
+base: core18
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64
+
+parts:
+  firecracker:
+    override-build: |
+      ./tools/devtool build
+    plugin: x_rust
+    rust-revision: "1.35.0"
+    source: .
+
+apps:
+  firecracker:
+    command: firecracker
+    plugs:
+      - home
+      - network
+  jailer:
+    command: bin/jailer
