@@ -8,6 +8,7 @@
 //! Emulates virtual and hardware devices.
 extern crate byteorder;
 extern crate epoll;
+extern crate kvm_ioctls;
 extern crate libc;
 
 extern crate dumbo;
@@ -23,11 +24,9 @@ extern crate virtio_gen;
 use rate_limiter::Error as RateLimiterError;
 use std::io;
 
-mod bus;
 pub mod legacy;
 pub mod virtio;
 
-pub use self::bus::{Bus, BusDevice, Error as BusError, RawIOHandler};
 use virtio::AsAny;
 
 pub type DeviceEventT = u16;

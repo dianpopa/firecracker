@@ -57,8 +57,6 @@ use std::time::Duration;
 
 use timerfd::{ClockId, SetTimeFlags, TimerFd, TimerState};
 
-#[cfg(target_arch = "aarch64")]
-use arch::DeviceType;
 #[cfg(target_arch = "x86_64")]
 use device_manager::legacy::PortIODeviceManager;
 #[cfg(target_arch = "aarch64")]
@@ -69,9 +67,10 @@ use devices::virtio::vsock::{TYPE_VSOCK, VSOCK_EVENTS_COUNT};
 use devices::virtio::EpollConfigConstructor;
 use devices::virtio::{BLOCK_EVENTS_COUNT, TYPE_BLOCK};
 use devices::virtio::{NET_EVENTS_COUNT, TYPE_NET};
-use devices::RawIOHandler;
 use devices::{DeviceEventT, EpollHandler};
 use error::{Error, Result, UserResult};
+use fc_util::device_config::FirecrackerDevice;
+use fc_util::device_config::{DeviceType, RawIOHandler};
 use fc_util::time::TimestampUs;
 use kernel::cmdline as kernel_cmdline;
 use kernel::loader as kernel_loader;
@@ -410,6 +409,7 @@ pub struct Vmm {
 
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
+    devices: HashMap<(DeviceType, String), Arc<Mutex<dyn FirecrackerDevice>>>,
 }
 
 impl Vmm {
@@ -462,6 +462,7 @@ impl Vmm {
             epoll_context,
             write_metrics_event_fd,
             seccomp_level,
+            devices: HashMap::new(),
         })
     }
 
@@ -574,11 +575,13 @@ impl Vmm {
         use StartMicrovmError::*;
 
         // We rely on check_health function for making sure kernel_config is not None.
-        let kernel_config = self.kernel_config.as_mut().ok_or(MissingKernelConfig)?;
+        let _kernel_config = self.kernel_config.as_mut().ok_or(MissingKernelConfig)?;
 
         // `unwrap` is suitable for this context since this should be called only after the
         // device manager has been initialized.
-        let device_manager = self.mmio_device_manager.as_mut().unwrap();
+        let _device_manager = self.mmio_device_manager.as_mut().unwrap();
+
+        let devices = &mut self.devices;
 
         for cfg in self.device_configs.network_interface.iter_mut() {
             let epoll_config = self.epoll_context.allocate_tokens_for_virtio_device(
@@ -601,7 +604,7 @@ impl Vmm {
                 .transpose()
                 .map_err(CreateRateLimiter)?;
 
-            let vm_fd = self.vm.fd();
+            let _vm_fd = self.vm.fd();
             cfg.open_tap()
                 .map_err(|_| NetDeviceNotConfigured)
                 .and_then(|tap| {
@@ -616,16 +619,12 @@ impl Vmm {
                         )
                         .map_err(CreateNetDevice)?,
                     );
-
-                    device_manager
-                        .register_virtio_device(
-                            vm_fd,
-                            net_box,
-                            &mut kernel_config.cmdline,
-                            TYPE_NET,
-                            &cfg.iface_id,
-                        )
-                        .map_err(RegisterNetDevice)
+                    let mmio_device = devices::virtio::MmioDevice::new(net_box).unwrap();
+                    devices.insert(
+                        (mmio_device.dev_type(), cfg.iface_id.clone()),
+                        Arc::new(Mutex::new(mmio_device)),
+                    );
+                    Ok(())
                 })?;
         }
         Ok(())
@@ -763,9 +762,20 @@ impl Vmm {
         self.init_mmio_device_manager()?;
 
         self.attach_block_devices()?;
-        self.attach_net_devices()?;
         self.attach_vsock_devices()?;
 
+        // This will only create the MMIO device, not add it to the bus.
+        self.attach_net_devices()?;
+
+        // Now we will actually reserve resources for our devices and them to the bus.
+        let device_manager = self.mmio_device_manager.as_mut().unwrap();
+        let vm_fd = self.vm.fd();
+        let kernel_config = self.kernel_config.as_mut().unwrap();
+        let devices = &mut self.devices;
+
+        device_manager
+            .register_devices(vm_fd, &mut kernel_config.cmdline, devices.clone())
+            .unwrap();
         Ok(())
     }
 

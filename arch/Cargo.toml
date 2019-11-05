@@ -9,8 +9,8 @@ kvm-ioctls = "0.3"
 libc = ">=0.2.39"
 
 arch_gen = { path = "../arch_gen" }
+fc_util = { path = "../fc_util" }
 memory_model = { path = "../memory_model" }
 
 [dev-dependencies]
-fc_util = { path = "../fc_util" }
 device_tree = ">=1.1.0"

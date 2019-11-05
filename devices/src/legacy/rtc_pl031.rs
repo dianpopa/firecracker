@@ -8,18 +8,17 @@
 //! a real-time clock input.
 //!
 
-extern crate fc_util;
-
 use std::fmt;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::io::RawFd;
 use std::time::Instant;
 use std::{io, result};
 
 use byteorder::{ByteOrder, LittleEndian};
 
-use crate::BusDevice;
+use fc_util::device_config::{BusDevice, DeviceType, FirecrackerDevice};
 use logger::{Metric, METRICS};
 use sys_util::EventFd;
-//use bus::Error;
 
 // As you can see in https://static.docs.arm.com/ddi0224/c/real_time_clock_pl031_r1p3_technical_reference_manual_DDI0224C.pdf
 // at section 3.2 Summary of RTC registers, the total size occupied by this device is 0x000 -> 0xFFC + 4 = 0x1000.
@@ -187,6 +186,20 @@ impl BusDevice for RTC {
             );
             METRICS.rtc.error_count.inc();
         }
+    }
+}
+
+impl FirecrackerDevice for RTC {
+    fn id(&self) -> String {
+        fc_util::device_config::DeviceType::RTC.to_string()
+    }
+
+    fn dev_type(&self) -> DeviceType {
+        fc_util::device_config::DeviceType::RTC
+    }
+
+    fn irq_fds(&self) -> Vec<RawFd> {
+        vec![EventFd::new().unwrap().as_raw_fd()]
     }
 }
 

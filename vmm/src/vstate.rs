@@ -23,9 +23,9 @@ use kvm_ioctls::*;
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
 use sys_util::EventFd;
+use vmm_config::device_config::Bus;
 #[cfg(target_arch = "x86_64")]
-use vmm_config::machine_config::CpuFeaturesTemplate;
-use vmm_config::machine_config::VmConfig;
+use vmm_config::machine_config::{CpuFeaturesTemplate, VmConfig};
 
 const KVM_MEM_LOG_DIRTY_PAGES: u32 = 0x1;
 
@@ -273,8 +273,8 @@ pub struct Vcpu {
     fd: VcpuFd,
     id: u8,
     #[cfg(target_arch = "x86_64")]
-    io_bus: devices::Bus,
-    mmio_bus: Option<devices::Bus>,
+    io_bus: Bus,
+    mmio_bus: Option<Bus>,
     create_ts: TimestampUs,
 }
 
@@ -293,7 +293,7 @@ impl Vcpu {
         id: u8,
         vm_fd: &VmFd,
         cpuid: CpuId,
-        io_bus: devices::Bus,
+        io_bus: Bus,
         create_ts: TimestampUs,
     ) -> Result<Self> {
         let kvm_vcpu = vm_fd.create_vcpu(id).map_err(Error::VcpuFd)?;
@@ -329,7 +329,7 @@ impl Vcpu {
     }
 
     /// Sets a MMIO bus for this vcpu.
-    pub fn set_mmio_bus(&mut self, mmio_bus: devices::Bus) {
+    pub fn set_mmio_bus(&mut self, mmio_bus: Bus) {
         self.mmio_bus = Some(mmio_bus);
     }
 

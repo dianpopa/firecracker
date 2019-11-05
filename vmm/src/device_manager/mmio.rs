@@ -10,12 +10,14 @@ use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
-#[cfg(target_arch = "aarch64")]
-use arch::aarch64::DeviceInfoForFDT;
-use arch::DeviceType;
+use super::super::vmm_config::device_config::{Bus, Error as BusError};
 use devices;
 use devices::virtio::TYPE_BLOCK;
-use devices::{BusDevice, RawIOHandler};
+#[cfg(target_arch = "aarch64")]
+use fc_util::device_config::DeviceInfoForFDT;
+
+use fc_util::device_config::RawIOHandler;
+use fc_util::device_config::{DeviceType, FirecrackerDevice};
 use kernel_cmdline;
 use kvm_ioctls::{IoEventAddress, VmFd};
 use memory_model::GuestMemory;
@@ -24,7 +26,7 @@ use memory_model::GuestMemory;
 #[derive(Debug)]
 pub enum Error {
     /// Failed to perform an operation on the bus.
-    BusError(devices::BusError),
+    BusError(BusError),
     /// Could not create the mmio device to wrap a VirtioDevice.
     CreateMmioDevice(io::Error),
     /// Appending to kernel command line failed.
@@ -46,7 +48,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Error::BusError(ref e) => write!(f, "failed to perform bus operation: {}", e),
+            Error::BusError(ref e) => write!(f, "failed to perform bus operation: {:?}", e),
             Error::CreateMmioDevice(ref e) => write!(f, "failed to create mmio device: {}", e),
             Error::Cmdline(ref e) => {
                 write!(f, "unable to add device to kernel command line: {}", e)
@@ -75,7 +77,7 @@ const MMIO_CFG_SPACE_OFF: u64 = 0x100;
 
 /// Manages the complexities of registering a MMIO device.
 pub struct MMIODeviceManager {
-    pub bus: devices::Bus,
+    pub bus: Bus,
     guest_mem: GuestMemory,
     mmio_base: u64,
     irq: u32,
@@ -99,10 +101,56 @@ impl MMIODeviceManager {
             mmio_base: *mmio_base,
             irq: irq_interval.0,
             last_irq: irq_interval.1,
-            bus: devices::Bus::new(),
+            bus: Bus::new(),
             id_to_dev_info: HashMap::new(),
             raw_io_handlers: HashMap::new(),
         }
+    }
+
+    /// Register a device to be used via MMIO transport.
+    pub fn register_devices(
+        &mut self,
+        vm: &VmFd,
+        cmdline: &mut kernel_cmdline::Cmdline,
+        devices: HashMap<(DeviceType, String), Arc<Mutex<dyn FirecrackerDevice>>>,
+    ) -> Result<()> {
+        if self.irq > self.last_irq {
+            return Err(Error::IrqsExhausted);
+        }
+
+        for ((_device_type, _device_id), lock_device) in &devices {
+            let mut device = lock_device.lock().expect("lala");
+
+            device.set_mem(self.guest_mem.clone());
+            for (io_evt, io_addr, datamatch) in device.mmio_ioevents(self.mmio_base) {
+                vm.register_ioevent(io_evt, &io_addr, datamatch)
+                    .map_err(Error::RegisterIoEvent)?;
+            }
+
+            for interrupt_evt in device.irq_fds() {
+                vm.register_irqfd(interrupt_evt, self.irq)
+                    .map_err(Error::RegisterIrqFd)?;
+                // as per doc, [virtio_mmio.]device=<size>@<baseaddr>:<irq> needs to be appended
+                // to kernel commandline for virtio mmio devices to get recognized
+                // the size parameter has to be transformed to KiB, so dividing hexadecimal value in
+                // bytes to 1024; further, the '{}' formatting rust construct will automatically
+                // transform it to decimal
+                #[cfg(target_arch = "x86_64")]
+                cmdline
+                    .insert(
+                        "virtio_mmio.device",
+                        &format!("{}K@0x{:08x}:{}", MMIO_LEN / 1024, self.mmio_base, self.irq),
+                    )
+                    .map_err(Error::Cmdline)?;
+                self.irq += 1;
+            }
+
+            self.bus
+                .insert(lock_device.clone(), self.mmio_base, MMIO_LEN)
+                .map_err(Error::BusError)?;
+            self.mmio_base += MMIO_LEN;
+        }
+        Ok(())
     }
 
     /// Register a virtio device to be used via MMIO transport.
@@ -117,8 +165,9 @@ impl MMIODeviceManager {
         if self.irq > self.last_irq {
             return Err(Error::IrqsExhausted);
         }
-        let mmio_device = devices::virtio::MmioDevice::new(self.guest_mem.clone(), device)
-            .map_err(Error::CreateMmioDevice)?;
+        let mut mmio_device =
+            devices::virtio::MmioDevice::new(device).map_err(Error::CreateMmioDevice)?;
+        mmio_device.set_mem(self.guest_mem.clone());
         for (i, queue_evt) in mmio_device.queue_evts().iter().enumerate() {
             let io_addr = IoEventAddress::Mmio(
                 self.mmio_base + u64::from(devices::virtio::NOTIFY_REG_OFFSET),
@@ -264,7 +313,7 @@ impl MMIODeviceManager {
         &self,
         device_type: DeviceType,
         device_id: &str,
-    ) -> Option<&Mutex<dyn BusDevice>> {
+    ) -> Option<&Mutex<dyn FirecrackerDevice>> {
         if let Some(dev_info) = self
             .id_to_dev_info
             .get(&(device_type, device_id.to_string()))

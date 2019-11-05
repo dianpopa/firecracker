@@ -4,14 +4,14 @@
 // Portions Copyright 2017 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
-
 use std::collections::VecDeque;
 use std::io;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::io::RawFd;
 
+use fc_util::device_config::{BusDevice, DeviceType, FirecrackerDevice, RawIOHandler};
 use logger::{Metric, METRICS};
 use sys_util::EventFd;
-
-use crate::bus::{BusDevice, RawIOHandler};
 
 const LOOP_SIZE: usize = 0x40;
 
@@ -236,6 +236,20 @@ impl BusDevice for Serial {
             error!("Failed the write to serial: {:?}", e);
             METRICS.uart.error_count.inc();
         }
+    }
+}
+
+impl FirecrackerDevice for Serial {
+    fn dev_type(&self) -> DeviceType {
+        fc_util::device_config::DeviceType::Serial
+    }
+
+    fn irq_fds(&self) -> Vec<RawFd> {
+        vec![EventFd::new().unwrap().as_raw_fd()]
+    }
+
+    fn deserialize(&self, _blob: &[u8]) -> Serial {
+        Serial::new(EventFd::new().unwrap(), Some(Box::new(io::stdout())))
     }
 }
 
