@@ -4,14 +4,15 @@
 // Portions Copyright 2017 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
-
-use logger::{Metric, METRICS};
 use std::fmt;
 use std::num::Wrapping;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::io::RawFd;
 use std::{io, result};
-use sys_util::EventFd;
 
-use crate::bus::BusDevice;
+use fc_util::device_config::{BusDevice, DeviceType, FirecrackerDevice};
+use logger::{Metric, METRICS};
+use sys_util::EventFd;
 
 #[derive(Debug)]
 pub enum Error {
@@ -324,6 +325,20 @@ impl BusDevice for I8042Device {
         } else {
             METRICS.i8042.missed_write_count.inc();
         }
+    }
+}
+
+impl FirecrackerDevice for I8042Device {
+    fn dev_type(&self) -> DeviceType {
+        fc_util::device_config::DeviceType::I8042
+    }
+
+    fn irq_fds(&self) -> Vec<RawFd> {
+        vec![EventFd::new().unwrap().as_raw_fd()]
+    }
+
+    fn deserialize(&self, _blob: &[u8]) -> I8042Device {
+        I8042Device::new(EventFd::new().unwrap(), EventFd::new().unwrap())
     }
 }
 

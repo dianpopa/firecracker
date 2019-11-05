@@ -5,16 +5,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use byteorder::{ByteOrder, LittleEndian};
+use kvm_ioctls::IoEventAddress;
 
 use memory_model::{GuestAddress, GuestMemory};
 use sys_util::EventFd;
 
 use super::*;
-use crate::bus::BusDevice;
+use fc_util::device_config::{BusDevice, DeviceType, FirecrackerDevice};
 
 //TODO crosvm uses 0 here, but IIRC virtio specified some other vendor id that should be used
 const VENDOR_ID: u32 = 0;
@@ -144,7 +146,7 @@ pub struct MmioDevice {
 
 impl MmioDevice {
     /// Constructs a new MMIO transport for the given virtio device.
-    pub fn new(mem: GuestMemory, device: Box<dyn VirtioDevice>) -> std::io::Result<MmioDevice> {
+    pub fn new(device: Box<dyn VirtioDevice>) -> std::io::Result<MmioDevice> {
         let mut queue_evts = Vec::new();
         for _ in device.queue_max_sizes().iter() {
             queue_evts.push(EventFd::new()?)
@@ -166,11 +168,11 @@ impl MmioDevice {
             config_generation: 0,
             queues,
             queue_evts,
-            mem: Some(mem),
+            mem: None,
         })
     }
 
-    // Gets the encapsulated VirtioDevice
+    // Gets the encapsulated VirtioDevice.
     pub fn device_mut(&mut self) -> &mut dyn VirtioDevice {
         &mut *self.device
     }
@@ -434,6 +436,46 @@ impl BusDevice for MmioDevice {
         // constructor.
         // write() is safe to unwrap because the inner syscall is tailored to be safe as well.
         self.interrupt_evt().unwrap().write(1).unwrap();
+    }
+}
+
+impl FirecrackerDevice for MmioDevice {
+    fn set_mem(&mut self, mem: GuestMemory) {
+        self.mem = Some(mem);
+    }
+
+    fn dev_type(&self) -> DeviceType {
+        DeviceType::Virtio(self.device.device_type())
+    }
+
+    fn mmio_ioevents(&self, base_addr: u64) -> Vec<(RawFd, kvm_ioctls::IoEventAddress, u64)> {
+        let mut io_events_vec = vec![];
+        for (i, queue_evt) in self.queue_evts().iter().enumerate() {
+            let io_addr = IoEventAddress::Mmio(base_addr + u64::from(super::NOTIFY_REG_OFFSET));
+            io_events_vec.push((queue_evt.as_raw_fd(), io_addr, i as u64));
+        }
+        io_events_vec
+    }
+
+    fn irq_fds(&self) -> Vec<RawFd> {
+        if let Some(interrupt_evt) = self.interrupt_evt() {
+            return vec![interrupt_evt.as_raw_fd()];
+        } else {
+            vec![]
+        }
+    }
+
+    fn deserialize(&self, _blob: &[u8]) -> MmioDevice {
+        use std::fs::File;
+        let epoll_raw_fd = epoll::create(true).unwrap();
+        let (sender, _receiver) = mpsc::channel();
+
+        let epoll_config = EpollConfig::new(0, epoll_raw_fd, sender);
+        MmioDevice::new(Box::new(
+            super::block::Block::new(File::open("some_file").unwrap(), false, epoll_config, None)
+                .unwrap(),
+        ))
+        .unwrap()
     }
 }
 

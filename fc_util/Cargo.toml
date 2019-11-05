@@ -5,3 +5,7 @@ authors = ["Amazon Firecracker team <firecracker-devel@amazon.com>"]
 
 [dependencies]
 libc = ">=0.2.39"
+kvm-ioctls = "0.3.0"
+
+memory_model = { path = "../memory_model" }
+sys_util = { path = "../sys_util" }

@@ -12,11 +12,11 @@ use std::fmt::Debug;
 use std::ptr::null;
 use std::{io, result};
 
-use super::super::DeviceType;
 use super::get_fdt_addr;
 use super::gic::GICDevice;
 use super::layout::FDT_MAX_SIZE;
 use aarch64::fdt::Error::CstringFDTTransform;
+use fc_util::device_config::{DeviceInfoForFDT, DeviceType};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
 
 // This is a value for uniquely identifying the FDT node declaring the interrupt controller.
@@ -50,16 +50,6 @@ extern "C" {
     fn fdt_open_into(fdt: *const c_void, buf: *mut c_void, bufsize: c_int) -> c_int;
     fn fdt_finish(fdt: *const c_void) -> c_int;
     fn fdt_pack(fdt: *mut c_void) -> c_int;
-}
-
-/// Trait for devices to be added to the Flattened Device Tree.
-pub trait DeviceInfoForFDT {
-    /// Returns the address where this device will be loaded.
-    fn addr(&self) -> u64;
-    /// Returns the associated interrupt for this device.
-    fn irq(&self) -> u32;
-    /// Returns the amount of memory that needs to be reserved for this device.
-    fn length(&self) -> u64;
 }
 
 /// Errors thrown while configuring the Flattened Device Tree for aarch64.
@@ -497,6 +487,7 @@ fn create_devices_node<T: DeviceInfoForFDT + Clone + Debug>(
             DeviceType::Virtio(_) => {
                 ordered_virtio_device.push(info);
             }
+            _ => (),
         }
     }
 

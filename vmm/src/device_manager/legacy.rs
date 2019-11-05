@@ -10,6 +10,7 @@ use std::fmt;
 use std::io::{self, stdout};
 use std::sync::{Arc, Mutex};
 
+use super::super::vmm_config::device_config::{Bus, Error as BusError};
 use devices;
 use sys_util::EventFd;
 
@@ -17,7 +18,7 @@ use sys_util::EventFd;
 #[derive(Debug)]
 pub enum Error {
     /// Cannot add legacy device to Bus.
-    BusError(devices::BusError),
+    BusError(BusError),
     /// Cannot create EventFd.
     EventFd(io::Error),
 }
@@ -39,7 +40,7 @@ type Result<T> = ::std::result::Result<T, Error>;
 /// on an I/O Bus. It currently manages the uart and i8042 devices.
 /// The `LegacyDeviceManger` should be initialized only by using the constructor.
 pub struct PortIODeviceManager {
-    pub io_bus: devices::Bus,
+    pub io_bus: Bus,
     pub stdio_serial: Arc<Mutex<devices::legacy::Serial>>,
     pub i8042: Arc<Mutex<devices::legacy::I8042Device>>,
 
@@ -51,7 +52,7 @@ pub struct PortIODeviceManager {
 impl PortIODeviceManager {
     /// Create a new DeviceManager handling legacy devices (uart, i8042).
     pub fn new() -> Result<Self> {
-        let io_bus = devices::Bus::new();
+        let io_bus = Bus::new();
         let com_evt_1_3 = EventFd::new().map_err(Error::EventFd)?;
         let com_evt_2_4 = EventFd::new().map_err(Error::EventFd)?;
         let kbd_evt = EventFd::new().map_err(Error::EventFd)?;

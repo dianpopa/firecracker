@@ -17,6 +17,7 @@ use std::ffi::CStr;
 use std::fmt::Debug;
 
 use self::gic::GICDevice;
+use fc_util::device_config::{DeviceInfoForFDT, DeviceType};
 use memory_model::{GuestAddress, GuestMemory};
 
 /// Errors thrown while configuring aarch64 system.
@@ -25,9 +26,6 @@ pub enum Error {
     /// Failed to create a Flattened Device Tree for this aarch64 microVM.
     SetupFDT(fdt::Error),
 }
-
-pub use self::fdt::DeviceInfoForFDT;
-use DeviceType;
 
 /// Returns a Vec of the valid memory addresses for aarch64.
 /// See [`layout`](layout) module for a drawing of the specific memory model for this platform.
