@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.23.0]
 
 ### Added
 
@@ -15,37 +15,6 @@
 - Added a [guide](docs/devctr-image.md) for updating the dev container image.
 - Added a new API call, `PUT /mmds/config`, for configuring the
   `MMDS` with a custom valid link-local IPv4 address.
-- Added experimental JSON response format support for MMDS guest applications
-  requests.
-- Added `track_dirty_pages` field to `machine-config`. If enabled, Firecracker
-  can create incremental guest memory snapshots by saving the dirty guest pages
-  in a sparse file.
-- Added a new API call, `PATCH /vm`, for changing the microVM state (to
-  `Paused` or `Resumed`).
-- Added a new API call, `PUT /snapshot/create`, for creating a full or diff
-  snapshot.
-- Added a new API call, `PUT /snapshot/load`, for loading a snapshot.
-- Added metrics for the vsock device.
-- Added `devtool strip` command which removes debug symbols from the release
-  binaries.
-- Added the `tx_malformed_frames` metric for the virtio net device, emitted
-  when a TX frame missing the VNET header is encountered.
-- Added metrics for counting rate limiter throttling events.
-- Added metric for counting MAC address updates.
-- Added metrics for counting TAP read and write errors.
-- Added metrics for counting RX and TX partial writes.
-- Added metrics that measure the duration of pausing and resuming the microVM,
-  from the VMM perspective.
-- Added metric for measuring the duration of the last full/diff snapshot created,
-  from the VMM perspective.
-- Added metric for measuring the duration of loading a snapshot, from the VMM
-  perspective.
-- Added metrics that measure the duration of pausing and resuming the microVM,
-  from the API (user) perspective.
-- Added metric for measuring the duration of the last full/diff snapshot created,
-  from the API (user) perspective.
-- Added metric for measuring the duration of loading a snapshot, from the API
-  (user) perspective.
 
 ### Fixed
 
@@ -64,30 +33,6 @@
 - In case of using an invalid JSON as a 'config-file' for Firecracker,
   the process will exit with return code 152.
 - Removed the `testrun.sh` wrapper.
-- Removed `metrics_fifo` field from the logger configuration.
-- Renamed `log_fifo` field from LoggerConfig to `log_path` and
-  `metrics_fifo` field from MetricsConfig to `metrics_path`.
-- `PATCH /drives/{id}` only allowed post-boot. Use `PUT` for pre-boot
-  updates to existing configurations.
-- `PATCH /network-interfaces/{id}` only allowed post-boot. Use `PUT` for
-  pre-boot updates to existing configurations.
-- Changed returned status code from `500 Internal Server Error` to
-  `501 Not Implemented`, for queries on the MMDS endpoint in IMDS format, when
-  the requested resource value type is unsupported.
-- Allowed the MMDS data store to be initialized with all supported JSON types.
-  Retrieval of these values within the guest, besides String, Array, and
-  Dictionary, is only possible in JSON mode.
-- `PATCH` request on `/mmds` before the data store is initialized returns
-  `403 BadRequest`.
-- Segregated MMDS documentation in MMDS design documentation and MMDS user
-  guide documentation.
-- The logger `level` field is now case-insensitive.
-- Disabled boot timer device after restoring a snapshot.
-- Enabled boot timer device only when specifically requested, by using the
-  `--boot-timer` dedicated cmdline parameter.
-- `firecracker/jailer --version` now gets updated on each devtool
-  build to the output of `git describe --dirty`, if the git repo is available.
-
 
 ## [0.21.0]
 
