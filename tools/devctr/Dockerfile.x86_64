@@ -53,6 +53,7 @@ RUN apt-get update \
     && python3 -m pip install \
         boto3 \
         dataclasses \
+        gitlint \
         nsenter \
         psutil \
         pycodestyle \
