@@ -15,7 +15,6 @@ MACHINE = platform.machine()
 TARGETS = ["{}-unknown-linux-gnu".format(MACHINE),
            "{}-unknown-linux-musl".format(MACHINE)]
 
-
 @pytest.mark.timeout(120)
 @pytest.mark.skipif(
     MACHINE != "x86_64",
@@ -68,16 +67,20 @@ def test_python_style():
         f"{cmd} {fname}" for cmd in linter_cmds for fname in python_files
     ])
 
-
-@pytest.mark.parametrize(
-    "target",
-    TARGETS
+@pytest.mark.skipif(
+    MACHINE != "x86_64",
+    reason="no need to test it on multiple platforms"
 )
-def test_rust_clippy(target):
-    """Fails if clippy generates any error, warnings are ignored."""
-    utils.run_cmd(
-        'cargo clippy --target {} --all --profile test'
-        ' -- -D warnings'.format(target))
+def test_firecracker_swagger():
+    """Fail if Firecracker swagger specification is malformed."""
+    yaml_spec = os.path.normpath(
+        os.path.join(os.getcwd(), '../src/api_server/swagger/firecracker.yaml')
+    )
+    check_swagger_style(yaml_spec)
+
+
+def test_gitlint():
+    utils.run_cmd("LC_ALL=C.UTF-8 LANG=C.UTF-8 gitlint --commits HEAD..master")
 
 
 def check_swagger_style(yaml_spec):
@@ -89,14 +92,3 @@ def check_swagger_style(yaml_spec):
         except Exception as exception:
             print(str(exception))
 
-
-@pytest.mark.skipif(
-    MACHINE != "x86_64",
-    reason="no need to test it on multiple platforms"
-)
-def test_firecracker_swagger():
-    """Fail if Firecracker swagger specification is malformed."""
-    yaml_spec = os.path.normpath(
-        os.path.join(os.getcwd(), '../src/api_server/swagger/firecracker.yaml')
-    )
-    check_swagger_style(yaml_spec)

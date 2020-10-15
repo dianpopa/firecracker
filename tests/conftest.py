@@ -279,7 +279,7 @@ def bin_seccomp_paths(test_session_root_path):
     extra_args = extra_args.format(platform.machine())
     build_tools.cargo_build(seccomp_build_path,
                             extra_args=extra_args,
-                            src_dir='integration_tests/security/demo_seccomp')
+                            src_dir='integration_tests/build-dependent/security/demo_seccomp')
 
     release_binaries_path = os.path.join(
         test_session_root_path,

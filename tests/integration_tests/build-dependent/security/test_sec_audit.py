@@ -20,7 +20,7 @@ def test_cargo_audit():
     cargo_lock_path = os.path.normpath(
         os.path.join(
             os.path.dirname(os.path.realpath(__file__)),
-            '../../../Cargo.lock')
+            '../../../../Cargo.lock')
     )
 
     # Run command and raise exception if non-zero return code

@@ -36,7 +36,7 @@ enough RAM, etc.), customers can rely on the following:
      API call to the start of the Linux guest user-space `/sbin/init` process.
      The boot time is measured using a VM with the serial console disabled
      and a minimal kernel and root file system. For more details check the
-     [boot time](tests/integration_tests/performance/test_boottime.py)
+     [boot time](tests/integration_tests/build-dependent/performance/test_boottime.py)
      integration tests.
    - The compute-only guest CPU performance is `> 95%` of the equivalent
      bare-metal performance. _`[integration test pending]`_
