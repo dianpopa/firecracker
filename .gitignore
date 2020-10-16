@@ -1,6 +1,7 @@
 /build/
 target
 *.rs.bk
+*.DS_Store
 *.iml
 .idea
 __pycache__
