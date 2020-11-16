@@ -8,26 +8,36 @@
 #![deny(missing_docs)]
 //! Utility for configuring the CPUID (CPU identification) for the guest microVM.
 
-#![cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "x86_64")]
 use kvm_bindings::CpuId;
 
 /// cpuid utility functions.
+#[cfg(target_arch = "x86_64")]
 pub mod common;
+#[cfg(target_arch = "x86_64")]
 use crate::common::*;
 
 /// Contains helper methods for bit operations.
 pub mod bit_helper;
 
 mod template;
+#[cfg(target_arch = "x86_64")]
 pub use crate::template::intel::c3;
+#[cfg(target_arch = "x86_64")]
 pub use crate::template::intel::t2;
+#[macro_use]
+pub use crate::template::arm::a1;
 
+#[cfg(target_arch = "x86_64")]
 mod cpu_leaf;
 
+#[cfg(target_arch = "x86_64")]
 mod transformer;
+#[cfg(target_arch = "x86_64")]
 use crate::transformer::*;
+#[cfg(target_arch = "x86_64")]
 pub use crate::transformer::{Error, VmSpec};
-
+#[cfg(target_arch = "x86_64")]
 mod brand_string;
 
 /// Sets up the CPUID entries for the given vcpu.

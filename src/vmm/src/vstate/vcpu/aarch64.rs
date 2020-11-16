@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::vstate::{vcpu::VcpuEmulation, vm::Vm};
+use cpuid::a1;
 use kvm_ioctls::*;
 use logger::{error, IncMetric, METRICS};
 use versionize::{VersionMap, Versionize, VersionizeResult};
@@ -115,7 +116,7 @@ impl KvmVcpu {
 
         self.mpidr =
             arch::aarch64::regs::read_mpidr(&self.fd).map_err(Error::ConfigureRegisters)?;
-
+        cpuid::a1::check_template(&self.fd);
         Ok(())
     }
 

@@ -26,5 +26,4 @@ seccomp = { path = "../seccomp" }
 snapshot = { path = "../snapshot"}
 utils = { path = "../utils" }
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
 cpuid = { path = "../cpuid" }
