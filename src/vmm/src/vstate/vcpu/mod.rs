@@ -26,6 +26,7 @@ use kvm_ioctls::VcpuExit;
 use logger::{error, info, IncMetric, METRICS};
 use seccomp::{BpfProgram, SeccompFilter};
 use utils::{
+    errno,
     eventfd::EventFd,
     signal::{register_signal_handler, sigrtmin, Killable},
     sm::StateMachine,
@@ -429,11 +430,16 @@ impl Vcpu {
         StateMachine::finish()
     }
 
+    #[cfg(not(test))]
+    fn emulate(&self) -> std::result::Result<VcpuExit, errno::Error> {
+        self.kvm_vcpu.fd.run()
+    }
+
     /// Runs the vCPU in KVM context and handles the kvm exit reason.
     ///
     /// Returns error or enum specifying whether emulation was handled or interrupted.
     pub fn run_emulation(&self) -> Result<VcpuEmulation> {
-        match self.kvm_vcpu.fd.run() {
+        match self.emulate() {
             Ok(run) => match run {
                 VcpuExit::MmioRead(addr, data) => {
                     if let Some(mmio_bus) = &self.kvm_vcpu.mmio_bus {
@@ -608,6 +614,7 @@ impl VcpuHandle {
     }
 }
 
+#[derive(Debug)]
 pub enum VcpuEmulation {
     Handled,
     Interrupted,
@@ -625,8 +632,37 @@ mod tests {
 
     use super::*;
     use crate::vstate::vm::{tests::setup_vm, Vm};
+    use lazy_static::lazy_static;
+    use std::sync::Mutex;
     use utils::signal::validate_signal_num;
     use vm_memory::{GuestAddress, GuestMemoryMmap};
+
+    lazy_static! {
+        static ref RESULT: Mutex<Option<std::result::Result<VcpuExit<'static>, errno::Error>>> =
+            Mutex::new(Some(Ok(VcpuExit::InternalError)));
+    }
+
+    impl Vcpu {
+        pub fn emulate(&self) -> std::result::Result<VcpuExit, errno::Error> {
+            RESULT.lock().unwrap().take().unwrap()
+        }
+    }
+
+    #[test]
+    fn test_run_emulation() {
+        let (_vm, vcpu, _vm_mem) = setup_vcpu(0x1000);
+
+        let res = vcpu.run_emulation();
+        println!("{:?}", res);
+        assert!(res.is_err());
+        {
+            let mut g = RESULT.lock().unwrap();
+            *g = Some(Err(errno::Error::new(libc::EINVAL)));
+        }
+        let res = vcpu.run_emulation();
+        println!("{:?}", res);
+        assert!(res.is_ok());
+    }
 
     impl PartialEq for VcpuResponse {
         fn eq(&self, other: &Self) -> bool {
