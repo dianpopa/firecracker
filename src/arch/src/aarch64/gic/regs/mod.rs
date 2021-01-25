@@ -63,7 +63,9 @@ pub(crate) trait VgicRegEngine {
 
     fn group() -> u32;
 
-    fn mpidr_mask() -> u64;
+    fn mpidr_mask() -> u64 {
+        0
+    }
 
     fn kvm_device_attr(offset: u64, val: &mut Self::RegChunk, mpidr: u64) -> kvm_device_attr {
         kvm_device_attr {
@@ -183,15 +185,17 @@ pub struct GicVcpuState {
 /// Save the state of the GIC device.
 pub fn save_state(fd: &DeviceFd, mpidrs: &[u64]) -> Result<GicState> {
     // Flush redistributors pending tables to guest RAM.
-    super::save_pending_tables(fd)?;
-
+    println!("entererd here");
+    // super::save_pending_tables(fd)?;
+    println!("entererd hereeee");
     let mut vcpu_states = Vec::with_capacity(mpidrs.len());
-    for mpidr in mpidrs {
+    for (i, mpidr) in mpidrs.iter().enumerate() {
         vcpu_states.push(GicVcpuState {
-            rdist: redist_regs::get_redist_regs(fd, *mpidr)?,
-            icc: icc_regs::get_icc_regs(fd, *mpidr)?,
+            rdist: Vec::new(),
+            icc: icc_regs::get_icc_regs(fd, i as u64)?,
         })
     }
+    println!("entererd herxxxe");
 
     Ok(GicState {
         dist: dist_regs::get_dist_regs(fd)?,

@@ -154,7 +154,7 @@ pub trait GICDevice {
 /// It will try to create by default a GICv3 device. If that fails it will try
 /// to fall-back to a GICv2 device.
 pub fn create_gic(vm: &VmFd, vcpu_count: u64) -> Result<Box<dyn GICDevice>> {
-    GICv3::new(vm, vcpu_count).or_else(|_| GICv2::new(vm, vcpu_count))
+    GICv2::new(vm, vcpu_count)
 }
 
 /// Function that flushes

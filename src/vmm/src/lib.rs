@@ -377,6 +377,7 @@ impl Vmm {
                 self.vm.save_state(&mpidrs).map_err(SaveVmState)?
             }
         };
+        println!("done saving vm state");
         let device_states = self.mmio_device_manager.save();
 
         let mem_size_mib = mem_size_mib(self.guest_memory());

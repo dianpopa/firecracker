@@ -30,15 +30,15 @@ const SYS_ICC_AP1R1_EL1: SimpleReg = SimpleReg::sys_icc_ap1rn_el1(1);
 const SYS_ICC_AP1R2_EL1: SimpleReg = SimpleReg::sys_icc_ap1rn_el1(2);
 const SYS_ICC_AP1R3_EL1: SimpleReg = SimpleReg::sys_icc_ap1rn_el1(3);
 
-static MAIN_VGIC_ICC_REGS: &[SimpleReg] = &[
-    SYS_ICC_SRE_EL1,
-    SYS_ICC_CTLR_EL1,
-    SYS_ICC_IGRPEN0_EL1,
-    SYS_ICC_IGRPEN1_EL1,
-    SYS_ICC_PMR_EL1,
-    SYS_ICC_BPR0_EL1,
-    SYS_ICC_BPR1_EL1,
-];
+// static MAIN_VGIC_ICC_REGS: &[SimpleReg] = &[
+//     SYS_ICC_SRE_EL1,
+//     SYS_ICC_CTLR_EL1,
+//     SYS_ICC_IGRPEN0_EL1,
+//     SYS_ICC_IGRPEN1_EL1,
+//     SYS_ICC_PMR_EL1,
+//     SYS_ICC_BPR0_EL1,
+//     SYS_ICC_BPR1_EL1,
+// ];
 
 static AP_VGIC_ICC_REGS: &[SimpleReg] = &[
     SYS_ICC_AP0R0_EL1,
@@ -49,6 +49,13 @@ static AP_VGIC_ICC_REGS: &[SimpleReg] = &[
     SYS_ICC_AP1R1_EL1,
     SYS_ICC_AP1R2_EL1,
     SYS_ICC_AP1R3_EL1,
+];
+
+static MAIN_VGIC_ICC_REGS: &[SimpleReg] = &[
+    SimpleReg::new(0x00, 4),
+    SimpleReg::new(0x04, 4),
+    SimpleReg::new(0x08, 4),
+    SimpleReg::new(0x1c, 4),
 ];
 
 impl SimpleReg {
@@ -76,12 +83,20 @@ impl SimpleReg {
     }
 }
 
-/// Structure for serializing the state of the Vgic ICC regs
+// /// Structure for serializing the state of the Vgic ICC regs
+// #[derive(Debug, Default, Versionize)]
+// pub struct VgicSysRegsState {
+//     main_icc_regs: Vec<GicRegState<u64>>,
+//     ap_icc_regs: Vec<Option<GicRegState<u64>>>,
+// }
+
 #[derive(Debug, Default, Versionize)]
 pub struct VgicSysRegsState {
     main_icc_regs: Vec<GicRegState<u64>>,
-    ap_icc_regs: Vec<Option<GicRegState<u64>>>,
 }
+
+const KVM_DEV_ARM_VGIC_CPUID_SHIFT: u32 = 32;
+const KVM_DEV_ARM_VGIC_OFFSET_SHIFT: u32 = 0;
 
 struct VgicSysRegEngine {}
 
@@ -90,11 +105,21 @@ impl VgicRegEngine for VgicSysRegEngine {
     type RegChunk = u64;
 
     fn group() -> u32 {
-        KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS
+        KVM_DEV_ARM_VGIC_GRP_CPU_REGS
     }
 
-    fn mpidr_mask() -> u64 {
-        KVM_DEV_ARM_VGIC_V3_MPIDR_MASK as u64
+    fn kvm_device_attr(offset: u64, val: &mut Self::RegChunk, cpuid: u64) -> kvm_device_attr {
+        println!("off {}", offset);
+        println!("mpidr {}", cpuid);
+        kvm_device_attr {
+            group: Self::group(),
+            attr: ((cpuid << KVM_DEV_ARM_VGIC_CPUID_SHIFT)
+                & (0xff << KVM_DEV_ARM_VGIC_CPUID_SHIFT))
+                | ((offset << KVM_DEV_ARM_VGIC_OFFSET_SHIFT)
+                    & (0xffffffff << KVM_DEV_ARM_VGIC_OFFSET_SHIFT)),
+            addr: val as *mut Self::RegChunk as u64,
+            flags: 0,
+        }
     }
 }
 
@@ -127,25 +152,57 @@ fn is_ap_reg_available(reg: &SimpleReg, num_priority_bits: u64) -> bool {
     true
 }
 
+// pub(crate) fn get_icc_regs(fd: &DeviceFd, mpidr: u64) -> Result<VgicSysRegsState> {
+//     println!("bla1");
+//     let main_icc_regs =
+//         VgicSysRegEngine::get_regs_data(fd, Box::new(MAIN_VGIC_ICC_REGS.iter()), mpidr)?;
+//     let num_priority_bits = num_priority_bits(fd, mpidr)?;
+//     println!("bla");
+//     let mut ap_icc_regs = Vec::with_capacity(AP_VGIC_ICC_REGS.len());
+//     for reg in AP_VGIC_ICC_REGS {
+//         if is_ap_reg_available(reg, num_priority_bits) {
+//             ap_icc_regs.push(Some(VgicSysRegEngine::get_reg_data(fd, reg, mpidr)?));
+//         } else {
+//             ap_icc_regs.push(None);
+//         }
+//     }
+//
+//     Ok(VgicSysRegsState {
+//         main_icc_regs,
+//         ap_icc_regs,
+//     })
+// }
+
 pub(crate) fn get_icc_regs(fd: &DeviceFd, mpidr: u64) -> Result<VgicSysRegsState> {
+    println!("bla icc");
     let main_icc_regs =
         VgicSysRegEngine::get_regs_data(fd, Box::new(MAIN_VGIC_ICC_REGS.iter()), mpidr)?;
-    let num_priority_bits = num_priority_bits(fd, mpidr)?;
+    println!("bla");
 
-    let mut ap_icc_regs = Vec::with_capacity(AP_VGIC_ICC_REGS.len());
-    for reg in AP_VGIC_ICC_REGS {
-        if is_ap_reg_available(reg, num_priority_bits) {
-            ap_icc_regs.push(Some(VgicSysRegEngine::get_reg_data(fd, reg, mpidr)?));
-        } else {
-            ap_icc_regs.push(None);
-        }
-    }
-
-    Ok(VgicSysRegsState {
-        main_icc_regs,
-        ap_icc_regs,
-    })
+    Ok(VgicSysRegsState { main_icc_regs })
 }
+
+// pub(crate) fn set_icc_regs(fd: &DeviceFd, mpidr: u64, state: &VgicSysRegsState) -> Result<()> {
+//     VgicSysRegEngine::set_regs_data(
+//         fd,
+//         Box::new(MAIN_VGIC_ICC_REGS.iter()),
+//         &state.main_icc_regs,
+//         mpidr,
+//     )?;
+//     let num_priority_bits = num_priority_bits(fd, mpidr)?;
+//
+//     for (reg, maybe_reg_data) in AP_VGIC_ICC_REGS.iter().zip(&state.ap_icc_regs) {
+//         if is_ap_reg_available(reg, num_priority_bits) != maybe_reg_data.is_some() {
+//             return Err(Error::InvalidVgicSysRegState);
+//         }
+//
+//         if let Some(reg_data) = maybe_reg_data {
+//             VgicSysRegEngine::set_reg_data(fd, reg, reg_data, mpidr)?;
+//         }
+//     }
+//
+//     Ok(())
+// }
 
 pub(crate) fn set_icc_regs(fd: &DeviceFd, mpidr: u64, state: &VgicSysRegsState) -> Result<()> {
     VgicSysRegEngine::set_regs_data(
@@ -154,17 +211,6 @@ pub(crate) fn set_icc_regs(fd: &DeviceFd, mpidr: u64, state: &VgicSysRegsState) 
         &state.main_icc_regs,
         mpidr,
     )?;
-    let num_priority_bits = num_priority_bits(fd, mpidr)?;
-
-    for (reg, maybe_reg_data) in AP_VGIC_ICC_REGS.iter().zip(&state.ap_icc_regs) {
-        if is_ap_reg_available(reg, num_priority_bits) != maybe_reg_data.is_some() {
-            return Err(Error::InvalidVgicSysRegState);
-        }
-
-        if let Some(reg_data) = maybe_reg_data {
-            VgicSysRegEngine::set_reg_data(fd, reg, reg_data, mpidr)?;
-        }
-    }
 
     Ok(())
 }

@@ -69,6 +69,7 @@ impl GICDevice for GICv2 {
     }
 
     fn fdt_compatibility(&self) -> &str {
+        println!("lala");
         "arm,gic-400"
     }
 
