@@ -1,11 +1,12 @@
 // Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+mod regs;
+
 use std::{boxed::Box, result};
 
+use crate::aarch64::gic::{Error, GICDevice, GicState};
 use kvm_ioctls::DeviceFd;
-
-use super::{Error, GICDevice};
 
 type Result<T> = result::Result<T, Error>;
 
@@ -69,7 +70,6 @@ impl GICDevice for GICv2 {
     }
 
     fn fdt_compatibility(&self) -> &str {
-        println!("lala");
         "arm,gic-400"
     }
 
@@ -111,5 +111,13 @@ impl GICDevice for GICv2 {
         )?;
 
         Ok(())
+    }
+
+    fn save_device(&self, mpidrs: &[u64]) -> Result<GicState> {
+        regs::save_state(&self.fd, mpidrs)
+    }
+
+    fn restore_device(&self, mpidrs: &[u64], state: &GicState) -> Result<()> {
+        regs::restore_state(&self.fd, mpidrs, state)
     }
 }

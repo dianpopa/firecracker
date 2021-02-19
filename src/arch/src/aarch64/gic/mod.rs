@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod gicv2;
-mod gicv3;
+/// Temporary doc
+pub mod gicv3;
 mod regs;
 
 use std::{boxed::Box, result};
@@ -11,8 +12,9 @@ use kvm_ioctls::{DeviceFd, VmFd};
 
 use super::layout;
 use gicv2::GICv2;
-use gicv3::GICv3;
-pub use regs::{restore_state, save_state, GicState};
+//use gicv3::GICv3;
+pub use gicv3::regs::{restore_state, save_state};
+pub use regs::GicState;
 
 /// Errors thrown while setting up the GIC.
 #[derive(Debug)]
@@ -132,6 +134,12 @@ pub trait GICDevice {
         Ok(())
     }
 
+    /// Method to save the state of the GIC device.
+    fn save_device(&self, mpidrs: &[u64]) -> Result<GicState>;
+
+    /// Method to restore the state of the GIC device.
+    fn restore_device(&self, mpidrs: &[u64], state: &GicState) -> Result<()>;
+
     /// Method to initialize the GIC device
     fn new(vm: &VmFd, vcpu_count: u64) -> Result<Box<dyn GICDevice>>
     where
@@ -157,21 +165,6 @@ pub fn create_gic(vm: &VmFd, vcpu_count: u64) -> Result<Box<dyn GICDevice>> {
     GICv2::new(vm, vcpu_count)
 }
 
-/// Function that flushes
-/// RDIST pending tables into guest RAM.
-///
-/// The tables get flushed to guest RAM whenever the VM gets stopped.
-pub fn save_pending_tables(fd: &DeviceFd) -> Result<()> {
-    let init_gic_attr = kvm_bindings::kvm_device_attr {
-        group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CTRL,
-        attr: u64::from(kvm_bindings::KVM_DEV_ARM_VGIC_SAVE_PENDING_TABLES),
-        addr: 0,
-        flags: 0,
-    };
-    fd.set_device_attr(&init_gic_attr)
-        .map_err(|e| Error::DeviceAttribute(e, true, kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CTRL))
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -183,24 +176,5 @@ mod tests {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
         assert!(create_gic(&vm, 1).is_ok());
-    }
-
-    #[test]
-    fn test_save_pending_tables() {
-        use std::os::unix::io::AsRawFd;
-
-        let kvm = Kvm::new().unwrap();
-        let vm = kvm.create_vm().unwrap();
-        let gic = create_gic(&vm, 1).expect("Cannot create gic");
-        assert!(save_pending_tables(&gic.device_fd()).is_ok());
-
-        unsafe { libc::close(gic.device_fd().as_raw_fd()) };
-
-        let res = save_pending_tables(&gic.device_fd());
-        assert!(res.is_err());
-        assert_eq!(
-            format!("{:?}", res.unwrap_err()),
-            "DeviceAttribute(Error(9), true, 4)"
-        );
     }
 }
