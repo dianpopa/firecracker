@@ -27,6 +27,7 @@ use super::{
 
 use crate::report_balloon_event_fail;
 use crate::virtio::balloon::Error as BalloonError;
+use vm_memory::GuestMemory;
 
 const SIZE_OF_U32: usize = std::mem::size_of::<u32>();
 const SIZE_OF_STAT: usize = std::mem::size_of::<BalloonStat>();
@@ -135,7 +136,10 @@ impl BalloonStats {
 }
 
 // Virtio balloon device.
-pub struct Balloon {
+pub struct Balloon<M: GuestMemory>
+where
+    M: std::marker::Send,
+{
     // Virtio fields.
     pub(crate) avail_features: u64,
     pub(crate) acked_features: u64,
@@ -147,7 +151,7 @@ pub struct Balloon {
     pub(crate) interrupt_status: Arc<AtomicUsize>,
     pub(crate) interrupt_evt: EventFd,
     pub(crate) queue_evts: [EventFd; NUM_QUEUES],
-    pub(crate) device_state: DeviceState,
+    pub(crate) device_state: DeviceState<M>,
 
     // Implementation specific fields.
     pub(crate) restored: bool,
@@ -161,13 +165,13 @@ pub struct Balloon {
     pub(crate) pfn_buffer: [u32; MAX_PAGE_COMPACT_BUFFER],
 }
 
-impl Balloon {
+impl<M: GuestMemory + std::marker::Send + 'static> Balloon<M> {
     pub fn new(
         amount_mb: u32,
         deflate_on_oom: bool,
         stats_polling_interval_s: u16,
         restored: bool,
-    ) -> Result<Balloon, BalloonError> {
+    ) -> Result<Balloon<M>, BalloonError> {
         let mut avail_features = 1u64 << VIRTIO_F_VERSION_1;
 
         if deflate_on_oom {
@@ -246,7 +250,7 @@ impl Balloon {
         // and sending a used buffer notification
         if let Some(index) = self.stats_desc_index.take() {
             self.queues[STATS_INDEX]
-                .add_used(&mem, index, 0)
+                .add_used(mem, index, 0)
                 .map_err(BalloonError::Queue)?;
             self.signal_used_queue()
         } else {
@@ -270,7 +274,7 @@ impl Balloon {
             // Internal loop processes descriptors and acummulates the pfns in `pfn_buffer`.
             // Breaks out when there is not enough space in `pfn_buffer` to completely process
             // the next descriptor.
-            while let Some(head) = queue.pop(&mem) {
+            while let Some(head) = queue.pop(mem) {
                 let len = head.len as usize;
                 let max_len = MAX_PAGES_IN_DESC * SIZE_OF_U32;
                 valid_descs_found = true;
@@ -312,7 +316,7 @@ impl Balloon {
                 // Acknowledge the receipt of the descriptor.
                 // 0 is number of bytes the device has written to memory.
                 queue
-                    .add_used(&mem, head.index, 0)
+                    .add_used(mem, head.index, 0)
                     .map_err(BalloonError::Queue)?;
                 needs_interrupt = true;
             }
@@ -327,7 +331,7 @@ impl Balloon {
                     GuestAddress((page_frame_number as u64) << VIRTIO_BALLOON_PFN_SHIFT);
 
                 if let Err(e) = remove_range(
-                    &mem,
+                    mem,
                     (guest_addr, u64::from(range_len) << VIRTIO_BALLOON_PFN_SHIFT),
                     self.restored,
                 ) {
@@ -351,9 +355,9 @@ impl Balloon {
         let queue = &mut self.queues[DEFLATE_INDEX];
         let mut needs_interrupt = false;
 
-        while let Some(head) = queue.pop(&mem) {
+        while let Some(head) = queue.pop(mem) {
             queue
-                .add_used(&mem, head.index, 0)
+                .add_used(mem, head.index, 0)
                 .map_err(BalloonError::Queue)?;
             needs_interrupt = true;
         }
@@ -369,13 +373,13 @@ impl Balloon {
         let mem = mem_of_active_device!(self.device_state);
         METRICS.balloon.stats_updates_count.inc();
 
-        while let Some(head) = self.queues[STATS_INDEX].pop(&mem) {
+        while let Some(head) = self.queues[STATS_INDEX].pop(mem) {
             if let Some(prev_stats_desc) = self.stats_desc_index {
                 // We shouldn't ever have an extra buffer if the driver follows
                 // the protocol, but return it if we find one.
                 error!("balloon: driver is not compliant, more than one stats buffer received");
                 self.queues[STATS_INDEX]
-                    .add_used(&mem, prev_stats_desc, 0)
+                    .add_used(mem, prev_stats_desc, 0)
                     .map_err(BalloonError::Queue)?;
             }
             for index in (0..head.len).step_by(SIZE_OF_STAT) {
@@ -496,7 +500,7 @@ impl Balloon {
     }
 }
 
-impl VirtioDevice for Balloon {
+impl<M: GuestMemory + 'static + Send> VirtioDevice<M> for Balloon<M> {
     fn device_type(&self) -> u32 {
         TYPE_BALLOON
     }
@@ -568,7 +572,7 @@ impl VirtioDevice for Balloon {
         }
     }
 
-    fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult {
+    fn activate(&mut self, mem: M) -> ActivateResult {
         self.device_state = DeviceState::Activated(mem);
         if self.activate_evt.write(1).is_err() {
             error!("Balloon: Cannot write to activate_evt");
@@ -602,7 +606,7 @@ pub(crate) mod tests {
     use polly::event_manager::{EventManager, Subscriber};
     use vm_memory::GuestAddress;
 
-    impl Balloon {
+    impl<M: GuestMemory + std::marker::Send + 'static> Balloon<M> {
         pub(crate) fn set_queue(&mut self, idx: usize, q: Queue) {
             self.queues[idx] = q;
         }

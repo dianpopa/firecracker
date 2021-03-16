@@ -11,13 +11,13 @@ use super::{ActivateResult, Queue};
 use crate::virtio::AsAny;
 use logger::warn;
 use utils::eventfd::EventFd;
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestMemory, GuestMemoryMmap};
 
 /// Enum that indicates if a VirtioDevice is inactive or has been activated
 /// and memory attached to it.
-pub enum DeviceState {
+pub enum DeviceState<M: GuestMemory> {
     Inactive,
-    Activated(GuestMemoryMmap),
+    Activated(M),
 }
 
 /// Trait for virtio devices to be driven by a virtio transport.
@@ -25,7 +25,7 @@ pub enum DeviceState {
 /// The lifecycle of a virtio device is to be moved to a virtio transport, which will then query the
 /// device. The virtio devices needs to create queues, events and event fds for interrupts and expose
 /// them to the transport via get_queues/get_queue_events/get_interrupt/get_interrupt_status fns.
-pub trait VirtioDevice: AsAny + Send {
+pub trait VirtioDevice<M: GuestMemory>: AsAny + Send {
     /// Get the available features offered by device.
     fn avail_features(&self) -> u64;
 
@@ -99,7 +99,7 @@ pub trait VirtioDevice: AsAny + Send {
     fn write_config(&mut self, offset: u64, data: &[u8]);
 
     /// Performs the formal activation for a device, which can be verified also with `is_activated`.
-    fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult;
+    fn activate(&mut self, mem: M) -> ActivateResult;
 
     /// Checks if the resources of this device are activated.
     fn is_activated(&self) -> bool;
@@ -111,7 +111,7 @@ pub trait VirtioDevice: AsAny + Send {
     }
 }
 
-impl std::fmt::Debug for dyn VirtioDevice {
+impl<M: GuestMemory + Send + 'static> std::fmt::Debug for dyn VirtioDevice<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "VirtioDevice type {}", self.device_type())
     }

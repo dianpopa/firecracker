@@ -26,7 +26,7 @@ use std::sync::Arc;
 use logger::{debug, error, warn, IncMetric, METRICS};
 use utils::byte_order;
 use utils::eventfd::EventFd;
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestMemory, GuestMemoryMmap};
 
 use super::super::super::Error as DeviceError;
 use super::super::{
@@ -48,7 +48,10 @@ pub(crate) const EVQ_INDEX: usize = 2;
 pub(crate) const AVAIL_FEATURES: u64 =
     1 << uapi::VIRTIO_F_VERSION_1 as u64 | 1 << uapi::VIRTIO_F_IN_ORDER as u64;
 
-pub struct Vsock<B> {
+pub struct Vsock<B, M: GuestMemory>
+where
+    M: Send,
+{
     cid: u64,
     pub(crate) queues: Vec<VirtQueue>,
     pub(crate) queue_events: Vec<EventFd>,
@@ -63,7 +66,7 @@ pub struct Vsock<B> {
     // mostly something we wanted to happen for the backend events, to prevent (potentially)
     // continuous triggers from happening before the device gets activated.
     pub(crate) activate_evt: EventFd,
-    pub(crate) device_state: DeviceState,
+    pub(crate) device_state: DeviceState<M>,
 }
 
 // TODO: Detect / handle queue deadlock:
@@ -71,11 +74,12 @@ pub struct Vsock<B> {
 //    can unregister any EPOLLIN listeners, since otherwise it will keep spinning, unable to consume
 //    its EPOLLIN events.
 
-impl<B> Vsock<B>
+impl<B, M: GuestMemory> Vsock<B, M>
 where
     B: VsockBackend,
+    M: Send,
 {
-    pub fn with_queues(cid: u64, backend: B, queues: Vec<VirtQueue>) -> super::Result<Vsock<B>> {
+    pub fn with_queues(cid: u64, backend: B, queues: Vec<VirtQueue>) -> super::Result<Vsock<B, M>> {
         let mut queue_events = Vec::new();
         for _ in 0..queues.len() {
             queue_events.push(EventFd::new(libc::EFD_NONBLOCK).map_err(VsockError::EventFd)?);
@@ -96,7 +100,7 @@ where
     }
 
     /// Create a new virtio-vsock device with the given VM CID and vsock backend.
-    pub fn new(cid: u64, backend: B) -> super::Result<Vsock<B>> {
+    pub fn new(cid: u64, backend: B) -> super::Result<Vsock<B, M>> {
         let queues: Vec<VirtQueue> = defs::QUEUE_SIZES
             .iter()
             .map(|&max_size| VirtQueue::new(max_size))
@@ -215,9 +219,10 @@ where
     }
 }
 
-impl<B> VirtioDevice for Vsock<B>
+impl<B, M: GuestMemory + 'static + Send> VirtioDevice<M> for Vsock<B, M>
 where
     B: VsockBackend + 'static,
+    M: Send,
 {
     fn avail_features(&self) -> u64 {
         self.avail_features
@@ -284,7 +289,7 @@ where
         );
     }
 
-    fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult {
+    fn activate(&mut self, mem: M) -> ActivateResult {
         if self.queues.len() != defs::NUM_QUEUES {
             METRICS.vsock.activate_fails.inc();
             error!(

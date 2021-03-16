@@ -13,6 +13,7 @@ use devices::virtio::Net;
 use utils::net::mac::MacAddr;
 
 use serde::Deserialize;
+use vm_memory::GuestMemory;
 
 /// This struct represents the strongly typed equivalent of the json body from net iface
 /// related requests.
@@ -108,11 +109,11 @@ type Result<T> = result::Result<T, NetworkInterfaceError>;
 
 /// Builder for a list of network devices.
 #[derive(Default)]
-pub struct NetBuilder {
-    net_devices: Vec<Arc<Mutex<Net>>>,
+pub struct NetBuilder<M: GuestMemory + Send> {
+    net_devices: Vec<Arc<Mutex<Net<M>>>>,
 }
 
-impl NetBuilder {
+impl<M: GuestMemory + Send + 'static> NetBuilder<M> {
     /// Creates an empty list of Network Devices.
     pub fn new() -> Self {
         NetBuilder {
@@ -122,19 +123,19 @@ impl NetBuilder {
     }
 
     /// Returns a immutable iterator over the network devices.
-    pub fn iter(&self) -> ::std::slice::Iter<Arc<Mutex<Net>>> {
+    pub fn iter(&self) -> ::std::slice::Iter<Arc<Mutex<Net<M>>>> {
         self.net_devices.iter()
     }
 
     /// Returns a mutable iterator over the network devices.
-    pub fn iter_mut(&mut self) -> ::std::slice::IterMut<Arc<Mutex<Net>>> {
+    pub fn iter_mut(&mut self) -> ::std::slice::IterMut<Arc<Mutex<Net<M>>>> {
         self.net_devices.iter_mut()
     }
 
     /// Builds a network device based on a network interface config. Keeps a device reference
     /// in the builder's internal list.
-    pub fn build(&mut self, netif_config: NetworkInterfaceConfig) -> Result<Arc<Mutex<Net>>> {
-        let mac_conflict = |net: &Arc<Mutex<Net>>| {
+    pub fn build(&mut self, netif_config: NetworkInterfaceConfig) -> Result<Arc<Mutex<Net<M>>>> {
+        let mac_conflict = |net: &Arc<Mutex<Net<M>>>| {
             let net = net.lock().expect("Poisoned lock");
             // Check if another net dev has same MAC.
             netif_config.guest_mac.is_some()
@@ -167,7 +168,7 @@ impl NetBuilder {
     }
 
     /// Creates a Net device from a NetworkInterfaceConfig.
-    pub fn create_net(cfg: NetworkInterfaceConfig) -> Result<Net> {
+    pub fn create_net(cfg: NetworkInterfaceConfig) -> Result<Net<M>> {
         let rx_rate_limiter = cfg
             .rx_rate_limiter
             .map(super::RateLimiterConfig::try_into)

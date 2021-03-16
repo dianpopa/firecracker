@@ -64,6 +64,7 @@ use seccomp::BpfProgramRef;
 use snapshot::Persist;
 use utils::epoll::{EpollEvent, EventSet};
 use utils::eventfd::EventFd;
+use vm_memory::bitmap::AtomicBitmap;
 use vm_memory::{GuestMemory, GuestMemoryMmap, GuestMemoryRegion, GuestRegionMmap};
 
 /// Success exit code.
@@ -223,28 +224,28 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub type DirtyBitmap = HashMap<usize, Vec<u64>>;
 
 /// Returns the size of guest memory, in MiB.
-pub(crate) fn mem_size_mib(guest_memory: &GuestMemoryMmap) -> u64 {
+pub(crate) fn mem_size_mib<M: GuestMemory>(guest_memory: &M) -> u64 {
     guest_memory.map_and_fold(0, |(_, region)| region.len(), |a, b| a + b) >> 20
 }
 
 /// Contains the state and associated methods required for the Firecracker VMM.
-pub struct Vmm {
+pub struct Vmm<M: Clone + GuestMemory + Send + 'static> {
     events_observer: Option<Box<dyn VmmEventsObserver>>,
 
     // Guest VM core resources.
-    guest_memory: GuestMemoryMmap,
+    guest_memory: M,
 
     vcpus_handles: Vec<VcpuHandle>,
     exit_evt: EventFd,
     vm: Vm,
 
     // Guest VM devices.
-    mmio_device_manager: MMIODeviceManager,
+    mmio_device_manager: MMIODeviceManager<M>,
     #[cfg(target_arch = "x86_64")]
     pio_device_manager: PortIODeviceManager,
 }
 
-impl Vmm {
+impl<M: Clone + GuestMemory + Send + 'static> Vmm<M> {
     /// Gets the specified bus device.
     pub fn get_bus_device(
         &self,
@@ -324,7 +325,7 @@ impl Vmm {
         .map_err(|_| Error::VcpuExit)
     }
     /// Returns a reference to the inner `GuestMemoryMmap` object if present, or `None` otherwise.
-    pub fn guest_memory(&self) -> &GuestMemoryMmap {
+    pub fn guest_memory(&self) -> &M {
         &self.guest_memory
     }
 
@@ -486,7 +487,7 @@ impl Vmm {
     pub fn get_dirty_bitmap(&self) -> Result<DirtyBitmap> {
         let mut bitmap: DirtyBitmap = HashMap::new();
         self.guest_memory.with_regions_mut(
-            |slot: usize, region: &GuestRegionMmap| -> Result<()> {
+            |slot: usize, region: &GuestRegionMmap<AtomicBitmap>| -> Result<()> {
                 let bitmap_region = self
                     .vm
                     .fd()
@@ -515,7 +516,7 @@ impl Vmm {
     /// We update the disk image on the device and its virtio configuration.
     pub fn update_block_device_path(&mut self, drive_id: &str, path_on_host: String) -> Result<()> {
         self.mmio_device_manager
-            .with_virtio_device_with_id(TYPE_BLOCK, drive_id, |block: &mut Block| {
+            .with_virtio_device_with_id(TYPE_BLOCK, drive_id, |block: &mut Block<M>| {
                 block
                     .update_disk_image(path_on_host)
                     .map_err(|e| e.to_string())
@@ -531,7 +532,7 @@ impl Vmm {
         rl_ops: BucketUpdate,
     ) -> Result<()> {
         self.mmio_device_manager
-            .with_virtio_device_with_id(TYPE_BLOCK, drive_id, |block: &mut Block| {
+            .with_virtio_device_with_id(TYPE_BLOCK, drive_id, |block: &mut Block<M>| {
                 block.update_rate_limiter(rl_bytes, rl_ops);
                 Ok(())
             })
@@ -548,7 +549,7 @@ impl Vmm {
         tx_ops: BucketUpdate,
     ) -> Result<()> {
         self.mmio_device_manager
-            .with_virtio_device_with_id(TYPE_NET, net_id, |net: &mut Net| {
+            .with_virtio_device_with_id(TYPE_NET, net_id, |net: &mut Net<M>| {
                 net.patch_rate_limiters(rx_bytes, rx_ops, tx_bytes, tx_ops);
                 Ok(())
             })
@@ -563,7 +564,7 @@ impl Vmm {
                 .lock()
                 .expect("Poisoned lock")
                 .as_any()
-                .downcast_ref::<MmioTransport>()
+                .downcast_ref::<MmioTransport<M>>()
                 // Only MmioTransport implements BusDevice at this point.
                 .expect("Unexpected BusDevice type")
                 .device();
@@ -572,7 +573,7 @@ impl Vmm {
                 .lock()
                 .expect("Poisoned lock")
                 .as_mut_any()
-                .downcast_mut::<Balloon>()
+                .downcast_mut::<Balloon<M>>()
                 .unwrap()
                 .config();
 
@@ -590,7 +591,7 @@ impl Vmm {
                 .lock()
                 .expect("Poisoned lock")
                 .as_any()
-                .downcast_ref::<MmioTransport>()
+                .downcast_ref::<MmioTransport<M>>()
                 // Only MmioTransport implements BusDevice at this point.
                 .expect("Unexpected BusDevice type")
                 .device();
@@ -599,7 +600,7 @@ impl Vmm {
                 .lock()
                 .expect("Poisoned lock")
                 .as_mut_any()
-                .downcast_mut::<Balloon>()
+                .downcast_mut::<Balloon<M>>()
                 .unwrap()
                 .latest_stats()
                 .ok_or(BalloonError::StatisticsDisabled)
@@ -629,7 +630,7 @@ impl Vmm {
                     .lock()
                     .expect("Poisoned lock")
                     .as_any()
-                    .downcast_ref::<MmioTransport>()
+                    .downcast_ref::<MmioTransport<M>>()
                     // Only MmioTransport implements BusDevice at this point.
                     .expect("Unexpected BusDevice type")
                     .device();
@@ -638,7 +639,7 @@ impl Vmm {
                     .lock()
                     .expect("Poisoned lock")
                     .as_mut_any()
-                    .downcast_mut::<Balloon>()
+                    .downcast_mut::<Balloon<M>>()
                     .unwrap()
                     .update_size(amount_mb)?;
             }
@@ -664,7 +665,7 @@ impl Vmm {
                     .lock()
                     .expect("Poisoned lock")
                     .as_any()
-                    .downcast_ref::<MmioTransport>()
+                    .downcast_ref::<MmioTransport<M>>()
                     // Only MmioTransport implements BusDevice at this point.
                     .expect("Unexpected BusDevice type")
                     .device();
@@ -673,7 +674,7 @@ impl Vmm {
                     .lock()
                     .expect("Poisoned lock")
                     .as_mut_any()
-                    .downcast_mut::<Balloon>()
+                    .downcast_mut::<Balloon<M>>()
                     .unwrap()
                     .update_stats_polling_interval(stats_polling_interval_s)?;
             }
@@ -709,13 +710,13 @@ fn construct_kvm_mpidrs(vcpu_states: &[VcpuState]) -> Vec<u64> {
         .collect()
 }
 
-impl Drop for Vmm {
+impl<M: Clone + GuestMemory + Send + 'static> Drop for Vmm<M> {
     fn drop(&mut self) {
         let _ = self.exit_vcpus();
     }
 }
 
-impl Subscriber for Vmm {
+impl<M: Clone + GuestMemory + Send + 'static> Subscriber for Vmm<M> {
     /// Handle a read event (EPOLLIN).
     fn process(&mut self, event: &EpollEvent, _: &mut EventManager) {
         let source = event.fd();

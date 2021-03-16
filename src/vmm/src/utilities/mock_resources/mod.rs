@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use crate::resources::VmResources;
 use crate::vmm_config::boot_source::BootSourceConfig;
 use crate::vmm_config::machine_config::VmConfig;
+use vm_memory::{GuestMemoryMmap, GuestMemory};
 
 pub const DEFAULT_BOOT_ARGS: &str = "reboot=k panic=1 pci=off";
 #[cfg(target_arch = "x86_64")]
@@ -65,7 +66,7 @@ impl Default for MockBootSourceConfig {
 }
 
 #[derive(Default)]
-pub struct MockVmResources(VmResources);
+pub struct MockVmResources(VmResources<GuestMemoryMmap<()>>);
 
 impl MockVmResources {
     pub fn new() -> MockVmResources {
@@ -98,5 +99,12 @@ impl MockVmConfig {
 }
 
 generate_into!(MockBootSourceConfig, BootSourceConfig);
-generate_into!(MockVmResources, VmResources);
+//generate_into!(MockVmResources, VmResources<M>);
 generate_into!(MockVmConfig, VmConfig);
+
+
+impl<M: GuestMemory + Default + Send> Into<VmResources<M>> for MockVmResources {
+    fn into(self) -> VmResources<M> {
+        self.0
+    }
+}

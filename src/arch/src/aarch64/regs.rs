@@ -11,7 +11,7 @@ use super::get_fdt_addr;
 use kvm_bindings::*;
 use kvm_ioctls::VcpuFd;
 use std::path::PathBuf;
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestMemory, GuestMemoryMmap};
 
 /// Errors thrown while setting aarch64 registers.
 #[derive(Debug)]
@@ -194,11 +194,11 @@ pub fn get_manufacturer_id_from_host() -> Result<u32> {
 /// * `cpu_id` - Index of current vcpu.
 /// * `boot_ip` - Starting instruction pointer.
 /// * `mem` - Reserved DRAM for current VM.
-pub fn setup_boot_regs(
+pub fn setup_boot_regs<M: GuestMemory>(
     vcpu: &VcpuFd,
     cpu_id: u8,
     boot_ip: u64,
-    mem: &GuestMemoryMmap,
+    mem: &M,
 ) -> Result<()> {
     let kreg_off = offset__of!(kvm_regs, regs);
 

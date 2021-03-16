@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::virtio::{Queue, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
 
-use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 
 #[macro_export]
 macro_rules! check_metric_after_block {
@@ -18,11 +18,11 @@ macro_rules! check_metric_after_block {
     }};
 }
 
-pub fn default_mem() -> GuestMemoryMmap {
+pub fn default_mem<M: GuestMemory + vm_memory::mmap::NewBitmap>() -> GuestMemoryMmap<M> {
     GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap()
 }
 
-pub fn initialize_virtqueue(vq: &VirtQueue) {
+pub fn initialize_virtqueue<M: GuestMemory>(vq: &VirtQueue<M>) {
     let request_type_desc: usize = 0;
     let data_desc: usize = 1;
     let status_desc: usize = 2;
@@ -71,18 +71,18 @@ impl InputData {
 }
 
 // Represents a location in GuestMemoryMmap which holds a given type.
-pub struct SomeplaceInMemory<'a, T> {
+pub struct SomeplaceInMemory<'a, T, M: GuestMemory> {
     pub location: GuestAddress,
-    mem: &'a GuestMemoryMmap,
+    mem: &'a M,
     phantom: PhantomData<*const T>,
 }
 
 // The ByteValued trait is required to use mem.read_obj_from_addr and write_obj_at_addr.
-impl<'a, T> SomeplaceInMemory<'a, T>
+impl<'a, T, M: GuestMemory> SomeplaceInMemory<'a, T, M>
 where
     T: vm_memory::ByteValued,
 {
-    fn new(location: GuestAddress, mem: &'a GuestMemoryMmap) -> Self {
+    fn new(location: GuestAddress, mem: &'a M) -> Self {
         SomeplaceInMemory {
             location,
             mem,
@@ -102,7 +102,7 @@ where
 
     // This function returns a place in memory which holds a value of type U, and starts
     // offset bytes after the current location.
-    fn map_offset<U>(&self, offset: usize) -> SomeplaceInMemory<'a, U> {
+    fn map_offset<U>(&self, offset: usize) -> SomeplaceInMemory<'a, U, M> {
         SomeplaceInMemory {
             location: self.location.checked_add(offset as u64).unwrap(),
             mem: self.mem,
@@ -112,7 +112,7 @@ where
 
     // This function returns a place in memory which holds a value of type U, and starts
     // immediately after the end of self (which is location + sizeof(T)).
-    fn next_place<U>(&self) -> SomeplaceInMemory<'a, U> {
+    fn next_place<U>(&self) -> SomeplaceInMemory<'a, U, M> {
         self.map_offset::<U>(mem::size_of::<T>())
     }
 
@@ -124,17 +124,17 @@ where
 }
 
 // Represents a virtio descriptor in guest memory.
-pub struct VirtqDesc<'a> {
-    pub addr: SomeplaceInMemory<'a, u64>,
-    pub len: SomeplaceInMemory<'a, u32>,
-    pub flags: SomeplaceInMemory<'a, u16>,
-    pub next: SomeplaceInMemory<'a, u16>,
+pub struct VirtqDesc<'a, M: GuestMemory> {
+    pub addr: SomeplaceInMemory<'a, u64, M>,
+    pub len: SomeplaceInMemory<'a, u32, M>,
+    pub flags: SomeplaceInMemory<'a, u16, M>,
+    pub next: SomeplaceInMemory<'a, u16, M>,
 }
 
-impl<'a> VirtqDesc<'a> {
+impl<'a, M: GuestMemory> VirtqDesc<'a, M> {
     pub const ALIGNMENT: u64 = 16;
 
-    fn new(start: GuestAddress, mem: &'a GuestMemoryMmap) -> Self {
+    fn new(start: GuestAddress, mem: &'a M) -> Self {
         assert_eq!(start.0 & (Self::ALIGNMENT - 1), 0);
 
         let addr = SomeplaceInMemory::new(start, mem);
@@ -178,18 +178,18 @@ impl<'a> VirtqDesc<'a> {
 
 // Represents a virtio queue ring. The only difference between the used and available rings,
 // is the ring element type.
-pub struct VirtqRing<'a, T> {
-    pub flags: SomeplaceInMemory<'a, u16>,
-    pub idx: SomeplaceInMemory<'a, u16>,
-    pub ring: Vec<SomeplaceInMemory<'a, T>>,
-    pub event: SomeplaceInMemory<'a, u16>,
+pub struct VirtqRing<'a, T, M: GuestMemory> {
+    pub flags: SomeplaceInMemory<'a, u16, M>,
+    pub idx: SomeplaceInMemory<'a, u16, M>,
+    pub ring: Vec<SomeplaceInMemory<'a, T, M>>,
+    pub event: SomeplaceInMemory<'a, u16, M>,
 }
 
-impl<'a, T> VirtqRing<'a, T>
+impl<'a, T, M: GuestMemory> VirtqRing<'a, T, M>
 where
     T: vm_memory::ByteValued,
 {
-    fn new(start: GuestAddress, mem: &'a GuestMemoryMmap, qsize: u16, alignment: usize) -> Self {
+    fn new(start: GuestAddress, mem: &'a M, qsize: u16, alignment: usize) -> Self {
         assert_eq!(start.0 & (alignment as u64 - 1), 0);
 
         let flags = SomeplaceInMemory::new(start, mem);
@@ -232,18 +232,18 @@ pub struct VirtqUsedElem {
 
 unsafe impl vm_memory::ByteValued for VirtqUsedElem {}
 
-pub type VirtqAvail<'a> = VirtqRing<'a, u16>;
-pub type VirtqUsed<'a> = VirtqRing<'a, VirtqUsedElem>;
+pub type VirtqAvail<'a, M: GuestMemory> = VirtqRing<'a, u16, M>;
+pub type VirtqUsed<'a, M: GuestMemory> = VirtqRing<'a, VirtqUsedElem, M>;
 
-pub struct VirtQueue<'a> {
-    pub dtable: Vec<VirtqDesc<'a>>,
-    pub avail: VirtqAvail<'a>,
-    pub used: VirtqUsed<'a>,
+pub struct VirtQueue<'a, M: GuestMemory> {
+    pub dtable: Vec<VirtqDesc<'a, M>>,
+    pub avail: VirtqAvail<'a, M>,
+    pub used: VirtqUsed<'a, M>,
 }
 
-impl<'a> VirtQueue<'a> {
+impl<'a, M: GuestMemory> VirtQueue<'a, M> {
     // We try to make sure things are aligned properly :-s
-    pub fn new(start: GuestAddress, mem: &'a GuestMemoryMmap, qsize: u16) -> Self {
+    pub fn new(start: GuestAddress, mem: &'a M, qsize: u16) -> Self {
         // power of 2?
         assert!(qsize > 0 && qsize & (qsize - 1) == 0);
 

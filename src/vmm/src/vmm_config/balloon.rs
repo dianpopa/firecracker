@@ -10,8 +10,9 @@ pub use devices::virtio::BALLOON_DEV_ID;
 use devices::virtio::{Balloon, BalloonConfig};
 
 use serde::{Deserialize, Serialize};
+use vm_memory::GuestMemory;
 
-type MutexBalloon = Arc<Mutex<Balloon>>;
+type MutexBalloon<M: GuestMemory> = Arc<Mutex<Balloon<M>>>;
 
 /// Errors associated with the operations allowed on the balloon.
 #[derive(Debug)]
@@ -116,18 +117,18 @@ pub struct BalloonUpdateStatsConfig {
 }
 
 /// A builder for `Balloon` devices from 'BalloonDeviceConfig'.
-pub struct BalloonBuilder {
-    inner: Option<MutexBalloon>,
+pub struct BalloonBuilder<M: GuestMemory + Send> {
+    inner: Option<MutexBalloon<M>>,
 }
 
 #[cfg(not(test))]
-impl Default for BalloonBuilder {
-    fn default() -> BalloonBuilder {
+impl<M: GuestMemory + Send> Default for BalloonBuilder<M> {
+    fn default() -> BalloonBuilder<M> {
         BalloonBuilder { inner: None }
     }
 }
 
-impl BalloonBuilder {
+impl<M: GuestMemory + Send + 'static> BalloonBuilder<M> {
     /// Creates an empty Balloon Store.
     pub fn new() -> Self {
         Self { inner: None }
@@ -152,7 +153,7 @@ impl BalloonBuilder {
     }
 
     /// Provides a reference to the Balloon if present.
-    pub fn get(&self) -> Option<&MutexBalloon> {
+    pub fn get(&self) -> Option<&MutexBalloon<M>> {
         self.inner.as_ref()
     }
 

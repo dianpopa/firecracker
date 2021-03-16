@@ -12,7 +12,7 @@ use snapshot::Persist;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 
-use vm_memory::GuestMemoryMmap;
+use vm_memory::GuestMemory;
 
 use super::*;
 
@@ -88,13 +88,13 @@ pub struct BalloonState {
     virtio_state: VirtioDeviceState,
 }
 
-pub struct BalloonConstructorArgs {
-    pub mem: GuestMemoryMmap,
+pub struct BalloonConstructorArgs<M: GuestMemory> {
+    pub mem: M,
 }
 
-impl Persist<'_> for Balloon {
+impl<M: GuestMemory + Send + 'static> Persist<'_> for Balloon<M> {
     type State = BalloonState;
-    type ConstructorArgs = BalloonConstructorArgs;
+    type ConstructorArgs = BalloonConstructorArgs<M>;
     type Error = super::Error;
 
     fn save(&self) -> Self::State {

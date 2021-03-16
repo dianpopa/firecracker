@@ -19,7 +19,7 @@ use logger::{error, warn, IncMetric, METRICS};
 use rate_limiter::{BucketUpdate, RateLimiter, TokenType};
 use utils::eventfd::EventFd;
 use virtio_gen::virtio_blk::*;
-use vm_memory::{Bytes, GuestMemoryError, GuestMemoryMmap};
+use vm_memory::{Bytes, GuestMemory, GuestMemoryError, GuestMemoryMmap};
 
 use super::{
     super::{ActivateResult, DeviceState, Queue, VirtioDevice, TYPE_BLOCK, VIRTIO_MMIO_INT_VRING},
@@ -175,7 +175,10 @@ impl Drop for DiskProperties {
 }
 
 /// Virtio device for exposing block level read/write operations on a host file.
-pub struct Block {
+pub struct Block<M: GuestMemory>
+where
+    M: std::marker::Send,
+{
     // Host file and properties.
     pub(crate) disk: DiskProperties,
 
@@ -190,7 +193,7 @@ pub struct Block {
     pub(crate) interrupt_status: Arc<AtomicUsize>,
     pub(crate) interrupt_evt: EventFd,
     pub(crate) queue_evts: [EventFd; 1],
-    pub(crate) device_state: DeviceState,
+    pub(crate) device_state: DeviceState<M>,
 
     // Implementation specific fields.
     pub(crate) id: String,
@@ -199,7 +202,7 @@ pub struct Block {
     pub(crate) rate_limiter: RateLimiter,
 }
 
-impl Block {
+impl<M: GuestMemory + Send + 'static> Block<M> {
     /// Create a new virtio block device that operates on the given file.
     ///
     /// The given file must be seekable and sizable.
@@ -211,7 +214,7 @@ impl Block {
         is_disk_read_only: bool,
         is_disk_root: bool,
         rate_limiter: RateLimiter,
-    ) -> io::Result<Block> {
+    ) -> io::Result<Block<M>> {
         let disk_properties = DiskProperties::new(disk_image_path, is_disk_read_only, cache_type)?;
 
         let mut avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_BLK_F_FLUSH);
@@ -264,7 +267,7 @@ impl Block {
     pub(crate) fn process_rate_limiter_event(&mut self) {
         METRICS.block.rate_limiter_event_count.inc();
         // Upon rate limiter event, call the rate limiter handler
-        // and restart processing the queue.
+        // and restart processing the queue.<
         if self.rate_limiter.event_handler().is_ok() && self.process_queue(0) {
             let _ = self.signal_used_queue();
         }
@@ -280,7 +283,7 @@ impl Block {
         let mut used_any = false;
         while let Some(head) = queue.pop(mem) {
             let len;
-            match Request::parse(&head, mem) {
+            match Request::parse(&head, &mem) {
                 Ok(request) => {
                     // If limiter.consume() fails it means there is no more TokenType::Ops
                     // budget and rate limiting is in effect.
@@ -439,7 +442,7 @@ impl Block {
     }
 }
 
-impl VirtioDevice for Block {
+impl<M: GuestMemory + 'static + Send> VirtioDevice<M> for Block<M> {
     fn device_type(&self) -> u32 {
         TYPE_BLOCK
     }
@@ -510,7 +513,7 @@ impl VirtioDevice for Block {
         }
     }
 
-    fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult {
+    fn activate(&mut self, mem: M) -> ActivateResult {
         if self.activate_evt.write(1).is_err() {
             error!("Block: Cannot write to activate_evt");
             return Err(super::super::ActivateError::BadActivate);

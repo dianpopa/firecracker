@@ -16,7 +16,8 @@ use crate::virtio::test_utils::VirtQueue;
 use crate::virtio::{Net, Queue, QueueError};
 
 use rate_limiter::RateLimiter;
-use vm_memory::{GuestAddress, GuestMemoryMmap};
+use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestAddress, GuestMemory};
 
 use utils::net::mac::MacAddr;
 
@@ -26,7 +27,7 @@ pub type Result<T> = ::std::result::Result<T, Error>;
 
 static NEXT_INDEX: AtomicUsize = AtomicUsize::new(1);
 
-pub fn default_net() -> Net {
+pub fn default_net<M: GuestMemory + Send + 'static>() -> Net<M> {
     let next_tap = NEXT_INDEX.fetch_add(1, Ordering::SeqCst);
     let tap_dev_name = format!("net-device{}", next_tap);
 
@@ -190,7 +191,7 @@ pub fn create_socket() -> File {
 }
 
 // Returns handles to virtio queues creation/activation and manipulation.
-pub fn virtqueues(mem: &GuestMemoryMmap) -> (VirtQueue, VirtQueue) {
+pub fn virtqueues<M: GuestMemory>(mem: &M) -> (VirtQueue<M>, VirtQueue<M>) {
     let rxq = VirtQueue::new(GuestAddress(0), mem, 16);
     let txq = VirtQueue::new(GuestAddress(0x1000), mem, 16);
     assert!(rxq.end().0 < txq.start().0);
@@ -233,14 +234,14 @@ pub fn enable(tap: &Tap) {
 }
 
 // Check that the used queue event has been generated `count` times.
-pub fn check_used_queue_signal(net: &Net, count: u64) {
+pub fn check_used_queue_signal<M: GuestMemory + Send>(net: &Net<M>, count: u64) {
     // Leave at least one event here so that reading it later won't block.
     net.interrupt_evt.write(1).unwrap();
     assert_eq!(net.interrupt_evt.read().unwrap(), count + 1);
 }
 
 #[cfg(test)]
-pub(crate) fn inject_tap_tx_frame(net: &Net, len: usize) -> Vec<u8> {
+pub(crate) fn inject_tap_tx_frame<M: GuestMemory>(net: &Net<M>, len: usize) -> Vec<u8> {
     assert!(len >= vnet_hdr_len());
     let tap_traffic_simulator = TapTrafficSimulator::new(if_index(&net.tap));
     let mut frame = utils::rand::rand_alphanumerics(len - vnet_hdr_len())
@@ -252,7 +253,11 @@ pub(crate) fn inject_tap_tx_frame(net: &Net, len: usize) -> Vec<u8> {
     frame
 }
 
-pub fn write_element_in_queue(net: &Net, idx: usize, val: u64) -> result::Result<(), DeviceError> {
+pub fn write_element_in_queue<M: GuestMemory + Send>(
+    net: &Net<M>,
+    idx: usize,
+    val: u64,
+) -> result::Result<(), DeviceError> {
     if idx > net.queue_evts.len() {
         return Err(DeviceError::QueueError(QueueError::DescIndexOutOfBounds(
             idx as u16,
@@ -262,7 +267,10 @@ pub fn write_element_in_queue(net: &Net, idx: usize, val: u64) -> result::Result
     Ok(())
 }
 
-pub fn get_element_from_queue(net: &Net, idx: usize) -> result::Result<u64, DeviceError> {
+pub fn get_element_from_queue<M: GuestMemory + Send>(
+    net: &Net<M>,
+    idx: usize,
+) -> result::Result<u64, DeviceError> {
     if idx > net.queue_evts.len() {
         return Err(DeviceError::QueueError(QueueError::DescIndexOutOfBounds(
             idx as u16,
@@ -275,17 +283,17 @@ pub fn default_guest_mac() -> MacAddr {
     MacAddr::parse_str("11:22:33:44:55:66").unwrap()
 }
 
-pub fn default_guest_memory() -> GuestMemoryMmap {
+pub fn default_guest_memory() -> GuestMemoryMmap<()> {
     GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap()
 }
 
-pub fn set_mac(net: &mut Net, mac: MacAddr) {
+pub fn set_mac<M: GuestMemory + Send>(net: &mut Net<M>, mac: MacAddr) {
     net.guest_mac = Some(mac);
     net.config_space.guest_mac.copy_from_slice(mac.get_bytes());
 }
 
 // Assigns "guest virtio driver" activated queues to the net device.
-pub fn assign_queues(net: &mut Net, rxq: Queue, txq: Queue) {
+pub fn assign_queues<M: GuestMemory + Send>(net: &mut Net<M>, rxq: Queue, txq: Queue) {
     net.queues.clear();
     net.queues.push(rxq);
     net.queues.push(txq);
@@ -313,12 +321,12 @@ pub mod test {
     use std::os::unix::io::AsRawFd;
     use std::sync::{Arc, Mutex, MutexGuard};
     use utils::epoll::{EpollEvent, EventSet};
-    use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+    use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 
-    pub struct TestHelper<'a> {
+    pub struct TestHelper<'a, M: GuestMemory> {
         pub event_manager: EventManager,
         pub net: Arc<Mutex<Net>>,
-        pub mem: GuestMemoryMmap,
+        pub mem: M,
         pub rxq: VirtQueue<'a>,
         pub txq: VirtQueue<'a>,
     }

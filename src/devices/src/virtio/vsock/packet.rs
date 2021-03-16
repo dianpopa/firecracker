@@ -111,7 +111,7 @@ impl VsockPacket {
     /// The chain head is expected to hold valid packet header data. A following packet buffer
     /// descriptor can optionally end the chain. Bounds and pointer checks are performed when
     /// creating the wrapper.
-    pub fn from_tx_virtq_head(head: &DescriptorChain) -> Result<Self> {
+    pub fn from_tx_virtq_head<M: GuestMemory>(head: &DescriptorChain<M>) -> Result<Self> {
         // All buffers in the TX queue must be readable.
         //
         if head.is_write_only() {
@@ -168,7 +168,7 @@ impl VsockPacket {
     ///
     /// There must be two descriptors in the chain, both writable: a header descriptor and a data
     /// descriptor. Bounds and pointer checks are performed when creating the wrapper.
-    pub fn from_rx_virtq_head(head: &DescriptorChain) -> Result<Self> {
+    pub fn from_rx_virtq_head<M: GuestMemory>(head: &DescriptorChain<M>) -> Result<Self> {
         // All RX buffers must be writable.
         //
         if !head.is_write_only() {
@@ -379,7 +379,7 @@ mod tests {
         };
     }
 
-    fn set_pkt_len(len: u32, guest_desc: &GuestQDesc, mem: &GuestMemoryMmap) {
+    fn set_pkt_len<M: GuestMemory>(len: u32, guest_desc: &GuestQDesc<M>, mem: &M) {
         let hdr_gpa = guest_desc.addr.get();
         let hdr_ptr = get_host_address(mem, GuestAddress(hdr_gpa), VSOCK_PKT_HDR_SIZE).unwrap();
         let len_ptr = unsafe { hdr_ptr.add(HDROFF_LEN) };

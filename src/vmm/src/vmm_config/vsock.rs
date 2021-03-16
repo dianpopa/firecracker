@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex};
 use devices::virtio::{Vsock, VsockError, VsockUnixBackend, VsockUnixBackendError};
 
 use serde::{Deserialize, Serialize};
+use vm_memory::GuestMemory;
 
-type MutexVsockUnix = Arc<Mutex<Vsock<VsockUnixBackend>>>;
+type MutexVsockUnix<M: GuestMemory> = Arc<Mutex<Vsock<VsockUnixBackend, M>>>;
 
 /// Errors associated with `NetworkInterfaceConfig`.
 #[derive(Debug)]
@@ -46,18 +47,18 @@ pub struct VsockDeviceConfig {
     pub uds_path: String,
 }
 
-struct VsockAndUnixPath {
-    vsock: MutexVsockUnix,
+struct VsockAndUnixPath<M: GuestMemory + Send> {
+    vsock: MutexVsockUnix<M>,
     uds_path: String,
 }
 
 /// A builder of Vsock with Unix backend from 'VsockDeviceConfig'.
 #[derive(Default)]
-pub struct VsockBuilder {
-    inner: Option<VsockAndUnixPath>,
+pub struct VsockBuilder<M: GuestMemory + Send> {
+    inner: Option<VsockAndUnixPath<M>>,
 }
 
-impl VsockBuilder {
+impl<M: GuestMemory + Send> VsockBuilder<M> {
     /// Creates an empty Vsock with Unix backend Store.
     pub fn new() -> Self {
         Self { inner: None }
@@ -80,12 +81,12 @@ impl VsockBuilder {
     }
 
     /// Provides a reference to the Vsock if present.
-    pub fn get(&self) -> Option<&MutexVsockUnix> {
+    pub fn get(&self) -> Option<&MutexVsockUnix<M>> {
         self.inner.as_ref().map(|pair| &pair.vsock)
     }
 
     /// Creates a Vsock device from a VsockDeviceConfig.
-    pub fn create_unixsock_vsock(cfg: VsockDeviceConfig) -> Result<Vsock<VsockUnixBackend>> {
+    pub fn create_unixsock_vsock(cfg: VsockDeviceConfig) -> Result<Vsock<VsockUnixBackend, M>> {
         let backend = VsockUnixBackend::new(u64::from(cfg.guest_cid), cfg.uds_path)
             .map_err(VsockConfigError::CreateVsockBackend)?;
 

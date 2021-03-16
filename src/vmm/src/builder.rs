@@ -35,7 +35,9 @@ use snapshot::Persist;
 use utils::eventfd::EventFd;
 use utils::terminal::Terminal;
 use utils::time::TimestampUs;
-use vm_memory::{GuestAddress, GuestMemoryMmap};
+use vm_memory::bitmap::AtomicBitmap;
+use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
+use vm_memory::Bytes;
 
 /// Errors associated with starting the instance.
 #[derive(Debug)]
@@ -203,12 +205,12 @@ impl VmmEventsObserver for SerialStdin {
 }
 
 #[cfg_attr(target_arch = "aarch64", allow(unused))]
-fn create_vmm_and_vcpus(
+fn create_vmm_and_vcpus<M: GuestMemory + Default + Send + Clone>(
     event_manager: &mut EventManager,
-    guest_memory: GuestMemoryMmap,
+    guest_memory: M,
     track_dirty_pages: bool,
     vcpu_count: u8,
-) -> std::result::Result<(Vmm, Vec<Vcpu>), StartMicrovmError> {
+) -> std::result::Result<(Vmm<M>, Vec<Vcpu>), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
     // Set up Kvm Vm and register memory regions.
@@ -283,11 +285,11 @@ fn create_vmm_and_vcpus(
 ///
 /// An `Arc` reference of the built `Vmm` is also plugged in the `EventManager`, while another
 /// is returned.
-pub fn build_microvm_for_boot(
-    vm_resources: &super::resources::VmResources,
+pub fn build_microvm_for_boot<M: GuestMemory + Default + Send + Clone + 'static>(
+    vm_resources: &super::resources::VmResources<M>,
     event_manager: &mut EventManager,
     seccomp_filter: BpfProgramRef,
-) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
+) -> std::result::Result<Arc<Mutex<Vmm<GuestMemoryMmap<AtomicBitmap>>>>, StartMicrovmError> {
     use self::StartMicrovmError::*;
     let boot_config = vm_resources.boot_source().ok_or(MissingKernelConfig)?;
 
@@ -381,13 +383,13 @@ pub fn build_microvm_for_boot(
 ///
 /// An `Arc` reference of the built `Vmm` is also plugged in the `EventManager`, while another
 /// is returned.
-pub fn build_microvm_from_snapshot(
+pub fn build_microvm_from_snapshot<M: GuestMemory + Default + Send + Clone>(
     event_manager: &mut EventManager,
     microvm_state: MicrovmState,
-    guest_memory: GuestMemoryMmap,
+    guest_memory: M,
     track_dirty_pages: bool,
     seccomp_filter: BpfProgramRef,
-) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
+) -> std::result::Result<Arc<Mutex<Vmm<M>>>, StartMicrovmError> {
     use self::StartMicrovmError::*;
     let vcpu_count = u8::try_from(microvm_state.vcpu_states.len())
         .map_err(|_| MicrovmStateError::InvalidInput)
@@ -455,7 +457,7 @@ pub fn build_microvm_from_snapshot(
 pub fn create_guest_memory(
     mem_size_mib: usize,
     track_dirty_pages: bool,
-) -> std::result::Result<GuestMemoryMmap, StartMicrovmError> {
+) -> std::result::Result<GuestMemoryMmap<AtomicBitmap>, StartMicrovmError> {
     let mem_size = mem_size_mib << 20;
     let arch_mem_regions = arch::arch_memory_regions(mem_size);
 
@@ -465,9 +467,9 @@ pub fn create_guest_memory(
     )
 }
 
-fn load_kernel(
+fn load_kernel<M: GuestMemory + Default + Send + Clone>(
     boot_config: &BootConfig,
-    guest_memory: &GuestMemoryMmap,
+    guest_memory: &M,
 ) -> std::result::Result<GuestAddress, StartMicrovmError> {
     let mut kernel_file = boot_config
         .kernel_file
@@ -481,9 +483,9 @@ fn load_kernel(
     Ok(entry_addr)
 }
 
-fn load_initrd_from_config(
+fn load_initrd_from_config<M: GuestMemory + Default + Send + Clone>(
     boot_cfg: &BootConfig,
-    vm_memory: &GuestMemoryMmap,
+    vm_memory: &M,
 ) -> std::result::Result<Option<InitrdConfig>, StartMicrovmError> {
     use self::StartMicrovmError::InitrdRead;
 
@@ -502,8 +504,8 @@ fn load_initrd_from_config(
 /// * `image` - The initrd image.
 ///
 /// Returns the result of initrd loading
-fn load_initrd<F>(
-    vm_memory: &GuestMemoryMmap,
+fn load_initrd<F, M: GuestMemory>(
+    vm_memory: &M,
     image: &mut F,
 ) -> std::result::Result<InitrdConfig, StartMicrovmError>
 where
@@ -540,8 +542,8 @@ where
     })
 }
 
-pub(crate) fn setup_kvm_vm(
-    guest_memory: &GuestMemoryMmap,
+pub(crate) fn setup_kvm_vm<M: GuestMemory>(
+    guest_memory: &M,
     track_dirty_pages: bool,
 ) -> std::result::Result<Vm, StartMicrovmError> {
     use self::StartMicrovmError::Internal;
@@ -549,7 +551,7 @@ pub(crate) fn setup_kvm_vm(
         .map_err(Error::KvmContext)
         .map_err(Internal)?;
     let mut vm = Vm::new(kvm.fd()).map_err(Error::Vm).map_err(Internal)?;
-    vm.memory_init(&guest_memory, kvm.max_memslots(), track_dirty_pages)
+    vm.memory_init(guest_memory, kvm.max_memslots(), track_dirty_pages)
         .map_err(Error::Vm)
         .map_err(Internal)?;
     Ok(vm)
@@ -665,8 +667,8 @@ fn create_vcpus(vm: &Vm, vcpu_count: u8, exit_evt: &EventFd) -> super::Result<Ve
 
 /// Configures the system for booting Linux.
 #[cfg_attr(target_arch = "aarch64", allow(unused))]
-pub fn configure_system_for_boot(
-    vmm: &Vmm,
+pub fn configure_system_for_boot<M: GuestMemory + Default + Send + Clone>(
+    vmm: &Vmm<M>,
     vcpus: &mut [Vcpu],
     vcpu_config: VcpuConfig,
     entry_addr: GuestAddress,
@@ -732,9 +734,9 @@ pub fn configure_system_for_boot(
 }
 
 /// Attaches a VirtioDevice device to the device manager and event manager.
-fn attach_virtio_device<T: 'static + VirtioDevice + Subscriber>(
+fn attach_virtio_device<M: GuestMemory + Default + Send + Clone, T: 'static + VirtioDevice<M> + Subscriber>(
     event_manager: &mut EventManager,
-    vmm: &mut Vmm,
+    vmm: &mut Vmm<M>,
     id: String,
     device: Arc<Mutex<T>>,
     cmdline: &mut KernelCmdline,
@@ -753,8 +755,8 @@ fn attach_virtio_device<T: 'static + VirtioDevice + Subscriber>(
         .map(|_| ())
 }
 
-pub(crate) fn attach_boot_timer_device(
-    vmm: &mut Vmm,
+pub(crate) fn attach_boot_timer_device<M: GuestMemory + Default + Send + Clone>(
+    vmm: &mut Vmm<M>,
     request_ts: TimestampUs,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
@@ -768,10 +770,10 @@ pub(crate) fn attach_boot_timer_device(
     Ok(())
 }
 
-fn attach_block_devices<'a>(
-    vmm: &mut Vmm,
+fn attach_block_devices<'a, M: GuestMemory + Default + Clone + 'static + Send >(
+    vmm: &mut Vmm<M>,
     cmdline: &mut KernelCmdline,
-    blocks: impl Iterator<Item = &'a Arc<Mutex<Block>>>,
+    blocks: impl Iterator<Item = &'a Arc<Mutex<Block<M>>>>,
     event_manager: &mut EventManager,
 ) -> std::result::Result<(), StartMicrovmError> {
     for block in blocks {
@@ -796,10 +798,10 @@ fn attach_block_devices<'a>(
     Ok(())
 }
 
-fn attach_net_devices<'a>(
-    vmm: &mut Vmm,
+fn attach_net_devices<'a, M: GuestMemory + 'static  + Default + Send + Clone>(
+    vmm: &mut Vmm<M>,
     cmdline: &mut KernelCmdline,
-    net_devices: impl Iterator<Item = &'a Arc<Mutex<Net>>>,
+    net_devices: impl Iterator<Item = &'a Arc<Mutex<Net<M>>>>,
     event_manager: &mut EventManager,
 ) -> std::result::Result<(), StartMicrovmError> {
     for net_device in net_devices {
@@ -810,10 +812,10 @@ fn attach_net_devices<'a>(
     Ok(())
 }
 
-fn attach_unixsock_vsock_device(
-    vmm: &mut Vmm,
+fn attach_unixsock_vsock_device<M: GuestMemory + 'static  + Default + Send + Clone>(
+    vmm: &mut Vmm<M>,
     cmdline: &mut KernelCmdline,
-    unix_vsock: &Arc<Mutex<Vsock<VsockUnixBackend>>>,
+    unix_vsock: &Arc<Mutex<Vsock<VsockUnixBackend, M>>>,
     event_manager: &mut EventManager,
 ) -> std::result::Result<(), StartMicrovmError> {
     let id = String::from(unix_vsock.lock().expect("Poisoned lock").id());
@@ -821,10 +823,10 @@ fn attach_unixsock_vsock_device(
     attach_virtio_device(event_manager, vmm, id, unix_vsock.clone(), cmdline)
 }
 
-fn attach_balloon_device(
-    vmm: &mut Vmm,
+fn attach_balloon_device<M: GuestMemory + 'static  + Default + Send + Clone>(
+    vmm: &mut Vmm<M>,
     cmdline: &mut KernelCmdline,
-    balloon: &Arc<Mutex<Balloon>>,
+    balloon: &Arc<Mutex<Balloon<M>>>,
     event_manager: &mut EventManager,
 ) -> std::result::Result<(), StartMicrovmError> {
     let id = String::from(balloon.lock().expect("Poisoned lock").id());

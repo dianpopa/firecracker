@@ -16,6 +16,7 @@ use devices::virtio::Block;
 pub use devices::virtio::CacheType;
 
 use serde::Deserialize;
+use vm_memory::GuestMemory;
 
 type Result<T> = result::Result<T, DriveError>;
 
@@ -104,20 +105,20 @@ pub struct BlockDeviceUpdateConfig {
 
 /// Wrapper for the collection that holds all the Block Devices
 #[derive(Default)]
-pub struct BlockBuilder {
+pub struct BlockBuilder<M: GuestMemory + Send> {
     /// The list of block devices.
     /// There can be at most one root block device and it would be the first in the list.
     // Root Device should be the first in the list whether or not PARTUUID is
     // specified in order to avoid bugs in case of switching from partuuid boot
     // scenarios to /dev/vda boot type.
-    pub list: VecDeque<Arc<Mutex<Block>>>,
+    pub list: VecDeque<Arc<Mutex<Block<M>>>>,
 }
 
-impl BlockBuilder {
+impl<M: GuestMemory + Send + 'static> BlockBuilder<M> {
     /// Constructor for BlockDevices. It initializes an empty LinkedList.
     pub fn new() -> Self {
         Self {
-            list: VecDeque::<Arc<Mutex<Block>>>::new(),
+            list: VecDeque::<Arc<Mutex<Block<M>>>>::new(),
         }
     }
 
@@ -178,7 +179,7 @@ impl BlockBuilder {
     }
 
     /// Creates a Block device from a BlockDeviceConfig.
-    pub fn create_block(block_device_config: BlockDeviceConfig) -> Result<Block> {
+    pub fn create_block(block_device_config: BlockDeviceConfig) -> Result<Block<M>> {
         // check if the path exists
         let path_on_host = PathBuf::from(&block_device_config.path_on_host);
         if !path_on_host.exists() {

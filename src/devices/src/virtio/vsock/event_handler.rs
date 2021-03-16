@@ -31,10 +31,12 @@ use utils::epoll::{EpollEvent, EventSet};
 use super::device::{Vsock, EVQ_INDEX, RXQ_INDEX, TXQ_INDEX};
 use super::VsockBackend;
 use crate::virtio::VirtioDevice;
+use vm_memory::GuestMemory;
 
-impl<B> Vsock<B>
+impl<B, M: GuestMemory> Vsock<B, M>
 where
     B: VsockBackend + 'static,
+    M: Send + 'static,
 {
     pub(crate) fn handle_rxq_event(&mut self, event: &EpollEvent) -> bool {
         debug!("vsock: RX queue event");
@@ -149,9 +151,10 @@ where
     }
 }
 
-impl<B> Subscriber for Vsock<B>
+impl<B, M: GuestMemory> Subscriber for Vsock<B, M>
 where
     B: VsockBackend + 'static,
+    M: Send + 'static,
 {
     fn process(&mut self, event: &EpollEvent, event_manager: &mut EventManager) {
         let source = event.fd();

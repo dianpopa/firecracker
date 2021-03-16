@@ -77,7 +77,7 @@ pub fn get_kernel_start() -> u64 {
 }
 
 /// Returns the memory address where the initrd could be loaded.
-pub fn initrd_load_addr(guest_mem: &GuestMemoryMmap, initrd_size: usize) -> super::Result<u64> {
+pub fn initrd_load_addr<M: GuestMemory>(guest_mem: &M, initrd_size: usize) -> super::Result<u64> {
     let first_region = guest_mem
         .find_region(GuestAddress::new(0))
         .ok_or(Error::InitrdAddress)?;
@@ -101,8 +101,8 @@ pub fn initrd_load_addr(guest_mem: &GuestMemoryMmap, initrd_size: usize) -> supe
 /// * `cmdline_size` - Size of the kernel command line in bytes including the null terminator.
 /// * `initrd` - Information about where the ramdisk image was loaded in the `guest_mem`.
 /// * `num_cpus` - Number of virtual CPUs the guest will have.
-pub fn configure_system(
-    guest_mem: &GuestMemoryMmap,
+pub fn configure_system<M: GuestMemory>(
+    guest_mem: &M,
     cmdline_addr: GuestAddress,
     cmdline_size: usize,
     initrd: &Option<InitrdConfig>,

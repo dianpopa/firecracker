@@ -9,8 +9,12 @@ use crate::virtio::test_utils::VirtQueue;
 use crate::virtio::Balloon;
 use ::utils::epoll::{EpollEvent, EventSet};
 use polly::event_manager::{EventManager, Subscriber};
+use vm_memory::GuestMemory;
 
-pub fn invoke_handler_for_queue_event(b: &mut Balloon, queue_index: usize) {
+pub fn invoke_handler_for_queue_event<M: GuestMemory + Send + 'static>(
+    b: &mut Balloon<M>,
+    queue_index: usize,
+) {
     assert!(queue_index < NUM_QUEUES);
     // Trigger the queue event.
     b.queue_evts[queue_index].write(1).unwrap();
@@ -23,7 +27,13 @@ pub fn invoke_handler_for_queue_event(b: &mut Balloon, queue_index: usize) {
     assert_eq!(b.interrupt_evt.read().unwrap(), 1);
 }
 
-pub fn set_request(queue: &VirtQueue, idx: usize, addr: u64, len: u32, flags: u16) {
+pub fn set_request<M: GuestMemory>(
+    queue: &VirtQueue<M>,
+    idx: usize,
+    addr: u64,
+    len: u32,
+    flags: u16,
+) {
     // Set the index of the next request.
     queue.avail.idx.set((idx + 1) as u16);
     // Set the current descriptor table entry index.
@@ -32,7 +42,7 @@ pub fn set_request(queue: &VirtQueue, idx: usize, addr: u64, len: u32, flags: u1
     queue.dtable[idx].set(addr, len, flags, 1);
 }
 
-pub fn check_request_completion(queue: &VirtQueue, idx: usize) {
+pub fn check_request_completion<M: GuestMemory>(queue: &VirtQueue<M>, idx: usize) {
     // Check that the next used will be idx + 1.
     assert_eq!(queue.used.idx.get(), (idx + 1) as u16);
     // Check that the current used is idx.

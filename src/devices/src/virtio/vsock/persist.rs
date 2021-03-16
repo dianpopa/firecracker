@@ -10,7 +10,7 @@ use super::*;
 use snapshot::Persist;
 use versionize::{VersionMap, Versionize, VersionizeError, VersionizeResult};
 use versionize_derive::Versionize;
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestMemory, GuestMemoryMmap};
 
 use crate::virtio::persist::VirtioDeviceState;
 use crate::virtio::{DeviceState, TYPE_VSOCK};
@@ -46,8 +46,8 @@ pub struct VsockUdsState {
 }
 
 /// A helper structure that holds the constructor arguments for VsockUnixBackend
-pub struct VsockConstructorArgs<B> {
-    pub mem: GuestMemoryMmap,
+pub struct VsockConstructorArgs<B, M: GuestMemory> {
+    pub mem: M,
     pub backend: B,
 }
 
@@ -81,12 +81,13 @@ impl Persist<'_> for VsockUnixBackend {
     }
 }
 
-impl<B> Persist<'_> for Vsock<B>
+impl<B, M: GuestMemory + 'static> Persist<'_> for Vsock<B, M>
 where
     B: VsockBackend + 'static,
+    M: Send,
 {
     type State = VsockFrontendState;
-    type ConstructorArgs = VsockConstructorArgs<B>;
+    type ConstructorArgs = VsockConstructorArgs<B, M>;
     type Error = VsockError;
 
     fn save(&self) -> Self::State {

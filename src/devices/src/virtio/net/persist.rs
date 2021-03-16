@@ -13,7 +13,7 @@ use snapshot::Persist;
 use utils::net::mac::{MacAddr, MAC_ADDR_LEN};
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestMemory, GuestMemoryMmap};
 
 use super::device::{ConfigSpace, Net};
 use super::{NUM_QUEUES, QUEUE_SIZE};
@@ -39,8 +39,8 @@ pub struct NetState {
     virtio_state: VirtioDeviceState,
 }
 
-pub struct NetConstructorArgs {
-    pub mem: GuestMemoryMmap,
+pub struct NetConstructorArgs<M: GuestMemory> {
+    pub mem: M,
 }
 
 #[derive(Debug)]
@@ -50,9 +50,9 @@ pub enum Error {
     VirtioState(VirtioStateError),
 }
 
-impl Persist<'_> for Net {
+impl<M: GuestMemory + Send + 'static> Persist<'_> for Net<M> {
     type State = NetState;
-    type ConstructorArgs = NetConstructorArgs;
+    type ConstructorArgs = NetConstructorArgs<M>;
     type Error = Error;
 
     fn save(&self) -> Self::State {

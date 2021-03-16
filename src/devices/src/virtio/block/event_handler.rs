@@ -8,8 +8,9 @@ use utils::epoll::{EpollEvent, EventSet};
 
 use crate::virtio::block::device::Block;
 use crate::virtio::VirtioDevice;
+use vm_memory::GuestMemory;
 
-impl Block {
+impl<M: GuestMemory + Send + 'static> Block<M> {
     fn process_activate_event(&self, event_manager: &mut EventManager) {
         debug!("block: activate event");
         if let Err(e) = self.activate_evt.read() {
@@ -42,7 +43,7 @@ impl Block {
     }
 }
 
-impl Subscriber for Block {
+impl<M: GuestMemory + Send + 'static> Subscriber for Block<M> {
     // Handle an event for queue or rate limiter.
     fn process(&mut self, event: &EpollEvent, evmgr: &mut EventManager) {
         let source = event.fd();

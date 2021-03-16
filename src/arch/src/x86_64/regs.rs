@@ -86,7 +86,7 @@ pub fn setup_regs(vcpu: &VcpuFd, boot_ip: u64) -> Result<()> {
 ///
 /// * `mem` - The memory that will be passed to the guest.
 /// * `vcpu` - Structure for the VCPU that holds the VCPU's fd.
-pub fn setup_sregs(mem: &GuestMemoryMmap, vcpu: &VcpuFd) -> Result<()> {
+pub fn setup_sregs<M: GuestMemory>(mem: &M, vcpu: &VcpuFd) -> Result<()> {
     let mut sregs: kvm_sregs = vcpu.get_sregs().map_err(Error::GetStatusRegisters)?;
 
     configure_segments_and_sregs(mem, &mut sregs)?;
@@ -107,7 +107,7 @@ const X86_CR0_PE: u64 = 0x1;
 const X86_CR0_PG: u64 = 0x8000_0000;
 const X86_CR4_PAE: u64 = 0x20;
 
-fn write_gdt_table(table: &[u64], guest_mem: &GuestMemoryMmap) -> Result<()> {
+fn write_gdt_table<M: GuestMemory>(table: &[u64], guest_mem: &M) -> Result<()> {
     let boot_gdt_addr = GuestAddress(BOOT_GDT_OFFSET);
     for (index, entry) in table.iter().enumerate() {
         let addr = guest_mem
@@ -120,14 +120,14 @@ fn write_gdt_table(table: &[u64], guest_mem: &GuestMemoryMmap) -> Result<()> {
     Ok(())
 }
 
-fn write_idt_value(val: u64, guest_mem: &GuestMemoryMmap) -> Result<()> {
+fn write_idt_value<M: GuestMemory>(val: u64, guest_mem: &M) -> Result<()> {
     let boot_idt_addr = GuestAddress(BOOT_IDT_OFFSET);
     guest_mem
         .write_obj(val, boot_idt_addr)
         .map_err(|_| Error::WriteIDT)
 }
 
-fn configure_segments_and_sregs(mem: &GuestMemoryMmap, sregs: &mut kvm_sregs) -> Result<()> {
+fn configure_segments_and_sregs<M: GuestMemory>(mem: &M, sregs: &mut kvm_sregs) -> Result<()> {
     let gdt_table: [u64; BOOT_GDT_MAX as usize] = [
         gdt_entry(0, 0, 0),            // NULL
         gdt_entry(0xa09b, 0, 0xfffff), // CODE
@@ -163,7 +163,7 @@ fn configure_segments_and_sregs(mem: &GuestMemoryMmap, sregs: &mut kvm_sregs) ->
     Ok(())
 }
 
-fn setup_page_tables(mem: &GuestMemoryMmap, sregs: &mut kvm_sregs) -> Result<()> {
+fn setup_page_tables<M: GuestMemory>(mem: &M, sregs: &mut kvm_sregs) -> Result<()> {
     // Puts PML4 right after zero page but aligned to 4k.
     let boot_pml4_addr = GuestAddress(PML4_START);
     let boot_pdpte_addr = GuestAddress(PDPTE_START);

@@ -50,8 +50,12 @@ pub fn arch_memory_regions(size: usize) -> Vec<(GuestAddress, usize)> {
 /// * `device_info` - A hashmap containing the attached devices for building FDT device nodes.
 /// * `gic_device` - The GIC device.
 /// * `initrd` - Information about an optional initrd.
-pub fn configure_system<T: DeviceInfoForFDT + Clone + Debug, S: std::hash::BuildHasher>(
-    guest_mem: &GuestMemoryMmap,
+pub fn configure_system<
+    T: DeviceInfoForFDT + Clone + Debug,
+    S: std::hash::BuildHasher,
+    M: GuestMemory,
+>(
+    guest_mem: &M,
     cmdline_cstring: &CStr,
     vcpu_mpidr: Vec<u64>,
     device_info: &HashMap<(DeviceType, String), T, S>,
@@ -76,7 +80,7 @@ pub fn get_kernel_start() -> u64 {
 }
 
 /// Returns the memory address where the initrd could be loaded.
-pub fn initrd_load_addr(guest_mem: &GuestMemoryMmap, initrd_size: usize) -> super::Result<u64> {
+pub fn initrd_load_addr<M: GuestMemory>(guest_mem: &M, initrd_size: usize) -> super::Result<u64> {
     let round_to_pagesize = |size| (size + (super::PAGE_SIZE - 1)) & !(super::PAGE_SIZE - 1);
     match GuestAddress(get_fdt_addr(&guest_mem)).checked_sub(round_to_pagesize(initrd_size) as u64)
     {
@@ -92,7 +96,7 @@ pub fn initrd_load_addr(guest_mem: &GuestMemoryMmap, initrd_size: usize) -> supe
 }
 
 // Auxiliary function to get the address where the device tree blob is loaded.
-fn get_fdt_addr(mem: &GuestMemoryMmap) -> u64 {
+fn get_fdt_addr<M: GuestMemory>(mem: &M) -> u64 {
     // If the memory allocated is smaller than the size allocated for the FDT,
     // we return the start of the DRAM so that
     // we allow the code to try and load the FDT.

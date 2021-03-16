@@ -35,7 +35,7 @@ use virtio_gen::virtio_net::{
     VIRTIO_NET_F_GUEST_TSO4, VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO,
     VIRTIO_NET_F_MAC,
 };
-use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
+use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryError, GuestMemoryMmap};
 
 enum FrontendError {
     AddUsed,
@@ -91,7 +91,7 @@ impl Default for ConfigSpace {
 
 unsafe impl ByteValued for ConfigSpace {}
 
-pub struct Net {
+pub struct Net<M: GuestMemory + Send> {
     pub(crate) id: String,
 
     pub(crate) tap: Tap,
@@ -120,7 +120,7 @@ pub struct Net {
     pub(crate) config_space: ConfigSpace,
     pub(crate) guest_mac: Option<MacAddr>,
 
-    pub(crate) device_state: DeviceState,
+    pub(crate) device_state: DeviceState<M>,
     pub(crate) activate_evt: EventFd,
 
     pub(crate) mmds_ns: Option<MmdsNetworkStack>,
@@ -129,7 +129,7 @@ pub struct Net {
     pub(crate) mocks: Mocks,
 }
 
-impl Net {
+impl<M: GuestMemory + Send + 'static> Net<M> {
     /// Create a new virtio network device with the given TAP interface.
     pub fn new_with_tap(
         id: String,
@@ -738,7 +738,7 @@ impl Net {
     }
 }
 
-impl VirtioDevice for Net {
+impl<M: GuestMemory + 'static + Send> VirtioDevice<M> for Net<M> {
     fn device_type(&self) -> u32 {
         TYPE_NET
     }
@@ -816,7 +816,7 @@ impl VirtioDevice for Net {
         }
     }
 
-    fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult {
+    fn activate(&mut self, mem: M) -> ActivateResult {
         if self.activate_evt.write(1).is_err() {
             error!("Net: Cannot write to activate_evt");
             return Err(super::super::ActivateError::BadActivate);

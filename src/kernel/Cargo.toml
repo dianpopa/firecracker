@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-vm-memory = { path = "../vm-memory" }
+vm-memory = { path = "../vm-memory", features = ["backend-mmap", "backend-bitmap"] }
 utils = { path = "../utils" }

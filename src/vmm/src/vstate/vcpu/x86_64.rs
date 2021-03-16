@@ -24,7 +24,7 @@ use kvm_ioctls::{VcpuExit, VcpuFd};
 use logger::{error, IncMetric, METRICS};
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
-use vm_memory::{Address, GuestAddress, GuestMemoryMmap};
+use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap};
 
 /// Errors associated with the wrappers over KVM ioctls.
 #[derive(Debug)]
@@ -176,9 +176,9 @@ impl KvmVcpu {
     /// * `kernel_start_addr` - Offset from `guest_mem` at which the kernel starts.
     /// * `vcpu_config` - The vCPU configuration.
     /// * `cpuid` - The capabilities exposed by this vCPU.
-    pub fn configure(
+    pub fn configure<M: GuestMemory>(
         &mut self,
-        guest_mem: &GuestMemoryMmap,
+        guest_mem: &M,
         kernel_start_addr: GuestAddress,
         vcpu_config: &VcpuConfig,
         mut cpuid: CpuId,

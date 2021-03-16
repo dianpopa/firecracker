@@ -9,7 +9,7 @@ use crate::virtio::MmioTransport;
 use snapshot::Persist;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
-use vm_memory::{address::Address, GuestAddress, GuestMemoryMmap};
+use vm_memory::{address::Address, GuestAddress, GuestMemory, GuestMemoryMmap};
 
 use std::num::Wrapping;
 use std::sync::atomic::Ordering;
@@ -93,7 +93,7 @@ pub struct VirtioDeviceState {
 }
 
 impl VirtioDeviceState {
-    pub fn from_device(device: &dyn VirtioDevice) -> Self {
+    pub fn from_device<M: GuestMemory>(device: &dyn VirtioDevice<M>) -> Self {
         VirtioDeviceState {
             device_type: device.device_type(),
             avail_features: device.avail_features(),
@@ -106,9 +106,9 @@ impl VirtioDeviceState {
 
     /// Does sanity checking on the `self` state against expected values
     /// and builds queues from state.
-    pub fn build_queues_checked(
+    pub fn build_queues_checked<M: GuestMemory>(
         &self,
-        mem: &GuestMemoryMmap,
+        mem: &M,
         expected_device_type: u32,
         expected_num_queues: usize,
         expected_queue_max_size: u16,
@@ -162,14 +162,14 @@ pub struct MmioTransportState {
     config_generation: u32,
 }
 
-pub struct MmioTransportConstructorArgs {
-    pub mem: GuestMemoryMmap,
-    pub device: Arc<Mutex<dyn VirtioDevice>>,
+pub struct MmioTransportConstructorArgs<M: GuestMemory> {
+    pub mem: M,
+    pub device: Arc<Mutex<dyn VirtioDevice<M>>>,
 }
 
-impl Persist<'_> for MmioTransport {
+impl<M: GuestMemory + Send + Clone> Persist<'_> for MmioTransport<M> {
     type State = MmioTransportState;
-    type ConstructorArgs = MmioTransportConstructorArgs;
+    type ConstructorArgs = MmioTransportConstructorArgs<M>;
     type Error = ();
 
     fn save(&self) -> Self::State {

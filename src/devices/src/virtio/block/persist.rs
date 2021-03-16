@@ -13,7 +13,7 @@ use snapshot::Persist;
 use versionize::{VersionMap, Versionize, VersionizeError, VersionizeResult};
 use versionize_derive::Versionize;
 use virtio_gen::virtio_blk::VIRTIO_BLK_F_RO;
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestMemory, GuestMemoryMmap};
 
 use super::*;
 
@@ -79,13 +79,13 @@ impl BlockState {
     }
 }
 
-pub struct BlockConstructorArgs {
-    pub mem: GuestMemoryMmap,
+pub struct BlockConstructorArgs<M: GuestMemory> {
+    pub mem: M,
 }
 
-impl Persist<'_> for Block {
+impl<M: GuestMemory + Send + 'static> Persist<'_> for Block<M> {
     type State = BlockState;
-    type ConstructorArgs = BlockConstructorArgs;
+    type ConstructorArgs = BlockConstructorArgs<M>;
     type Error = io::Error;
 
     fn save(&self) -> Self::State {

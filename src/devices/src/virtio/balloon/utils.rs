@@ -64,8 +64,8 @@ pub(crate) fn compact_page_frame_numbers(v: &mut [u32]) -> Vec<(u32, u32)> {
     result
 }
 
-pub(crate) fn remove_range(
-    guest_memory: &GuestMemoryMmap,
+pub(crate) fn remove_range<M: GuestMemory>(
+    guest_memory: &M,
     range: (GuestAddress, u64),
     restored: bool,
 ) -> std::result::Result<(), RemoveRegionError> {

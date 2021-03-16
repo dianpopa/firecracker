@@ -28,7 +28,7 @@ use polly::event_manager::{Error as EventMgrError, EventManager, Subscriber};
 use snapshot::Persist;
 use versionize::{VersionMap, Versionize, VersionizeError, VersionizeResult};
 use versionize_derive::Versionize;
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestMemory, GuestMemoryMmap};
 
 /// Errors for (de)serialization of the MMIO device manager.
 #[derive(Debug)]
@@ -141,15 +141,17 @@ impl DeviceStates {
     }
 }
 
-pub struct MMIODevManagerConstructorArgs<'a> {
-    pub mem: GuestMemoryMmap,
+use std::marker::PhantomData;
+
+pub struct MMIODevManagerConstructorArgs<'a, M: GuestMemory> {
+    pub mem: M,
     pub vm: &'a VmFd,
     pub event_manager: &'a mut EventManager,
 }
 
-impl<'a> Persist<'a> for MMIODeviceManager {
+impl<'a, M: GuestMemory + Send + Clone> Persist<'a> for MMIODeviceManager<M> {
     type State = DeviceStates;
-    type ConstructorArgs = MMIODevManagerConstructorArgs<'a>;
+    type ConstructorArgs = MMIODevManagerConstructorArgs<'a, M>;
     type Error = Error;
 
     fn save(&self) -> Self::State {
@@ -182,7 +184,7 @@ impl<'a> Persist<'a> for MMIODeviceManager {
             let mmio_transport = locked_bus_dev
                 .as_any()
                 // Only MmioTransport implements BusDevice on x86_64 at this point.
-                .downcast_ref::<MmioTransport>()
+                .downcast_ref::<MmioTransport<M>>()
                 .expect("Unexpected BusDevice type");
 
             let transport_state = mmio_transport.save();
@@ -192,7 +194,7 @@ impl<'a> Persist<'a> for MMIODeviceManager {
                 TYPE_BALLOON => {
                     let balloon_state = locked_device
                         .as_any()
-                        .downcast_ref::<Balloon>()
+                        .downcast_ref::<Balloon<M>>()
                         .unwrap()
                         .save();
                     states.balloon_device = Some(ConnectedBalloonState {
@@ -205,7 +207,7 @@ impl<'a> Persist<'a> for MMIODeviceManager {
                 TYPE_BLOCK => {
                     let block_state = locked_device
                         .as_any()
-                        .downcast_ref::<Block>()
+                        .downcast_ref::<Block<M>>()
                         .unwrap()
                         .save();
                     states.block_devices.push(ConnectedBlockState {
@@ -228,7 +230,7 @@ impl<'a> Persist<'a> for MMIODeviceManager {
                     let vsock = locked_device
                         .as_any()
                         // Currently, VsockUnixBackend is the only implementation of VsockBackend.
-                        .downcast_ref::<Vsock<VsockUnixBackend>>()
+                        .downcast_ref::<Vsock<VsockUnixBackend, M>>()
                         .unwrap();
                     let vsock_state = VsockState {
                         backend: vsock.backend().save(),
@@ -282,7 +284,7 @@ impl<'a> Persist<'a> for MMIODeviceManager {
             }
         }
 
-        let mut restore_helper = |device: Arc<Mutex<dyn VirtioDevice>>,
+        let mut restore_helper = |device: Arc<Mutex<dyn VirtioDevice<M>>>,
                                   as_subscriber: Arc<Mutex<dyn Subscriber>>,
                                   id: &String,
                                   state: &MmioTransportState,

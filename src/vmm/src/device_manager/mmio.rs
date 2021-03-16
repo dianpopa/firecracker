@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
+use std::marker::PhantomData;
 
 #[cfg(target_arch = "aarch64")]
 use arch::aarch64::DeviceInfoForFDT;
@@ -23,6 +24,7 @@ use kvm_ioctls::{IoEventAddress, VmFd};
 use logger::info;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
+use vm_memory::GuestMemory;
 
 /// Errors for MMIO device manager.
 #[derive(Debug)]
@@ -128,17 +130,18 @@ impl IrqManager {
 }
 
 /// Manages the complexities of registering a MMIO device.
-pub struct MMIODeviceManager {
+pub struct MMIODeviceManager<M: GuestMemory + Send + Clone + 'static> {
     pub(crate) bus: devices::Bus,
     mmio_base: u64,
     next_avail_mmio: u64,
     irqs: IrqManager,
     pub(crate) id_to_dev_info: HashMap<(DeviceType, String), MMIODeviceInfo>,
+    phantom: PhantomData<&'static M>,
 }
 
-impl MMIODeviceManager {
+impl<M: GuestMemory + Send + Clone> MMIODeviceManager<M> {
     /// Create a new DeviceManager handling mmio devices (virtio net, block).
-    pub fn new(mmio_base: u64, irq_interval: (u32, u32)) -> MMIODeviceManager {
+    pub fn new(mmio_base: u64, irq_interval: (u32, u32)) -> MMIODeviceManager<M> {
         MMIODeviceManager {
             mmio_base,
             next_avail_mmio: mmio_base,
@@ -187,7 +190,7 @@ impl MMIODeviceManager {
         &mut self,
         vm: &VmFd,
         device_id: String,
-        mmio_device: MmioTransport,
+        mmio_device: MmioTransport<M>,
         slot: &MMIODeviceInfo,
     ) -> Result<()> {
         // Our virtio devices are currently hardcoded to use a single IRQ.
@@ -237,7 +240,7 @@ impl MMIODeviceManager {
         &mut self,
         vm: &VmFd,
         device_id: String,
-        mmio_device: MmioTransport,
+        mmio_device: MmioTransport<M>,
         _cmdline: &mut kernel_cmdline::Cmdline,
     ) -> Result<MMIODeviceInfo> {
         let mmio_slot = self.allocate_new_slot(1)?;
@@ -359,9 +362,14 @@ impl MMIODeviceManager {
     }
 
     /// Run fn `f()` for the virtio device matching `virtio_type` and `id`.
-    pub fn with_virtio_device_with_id<T, F>(&self, virtio_type: u32, id: &str, f: F) -> Result<()>
+    pub fn with_virtio_device_with_id<T, F>(
+        &self,
+        virtio_type: u32,
+        id: &str,
+        f: F,
+    ) -> Result<()>
     where
-        T: VirtioDevice + 'static,
+        T: VirtioDevice<M> + 'static,
         F: FnOnce(&mut T) -> std::result::Result<(), String>,
     {
         if let Some(busdev) = self.get_device(DeviceType::Virtio(virtio_type), id) {
@@ -369,7 +377,7 @@ impl MMIODeviceManager {
                 .lock()
                 .expect("Poisoned lock")
                 .as_any()
-                .downcast_ref::<MmioTransport>()
+                .downcast_ref::<MmioTransport<M>>()
                 .expect("Unexpected BusDevice type")
                 .device();
             let mut dev = virtio_device.lock().expect("Poisoned lock");

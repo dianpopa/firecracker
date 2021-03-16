@@ -22,6 +22,7 @@ use mmds::ns::MmdsNetworkStack;
 use utils::net::ipv4addr::is_link_local_valid;
 
 use serde::Deserialize;
+use vm_memory::GuestMemory;
 
 type Result<E> = std::result::Result<(), E>;
 
@@ -76,26 +77,26 @@ pub struct VmmConfig {
 /// A data structure that encapsulates the device configurations
 /// held in the Vmm.
 #[derive(Default)]
-pub struct VmResources {
+pub struct VmResources<M: GuestMemory + Send + Default> {
     /// The vCpu and memory configuration for this microVM.
     vm_config: VmConfig,
     /// The boot configuration for this microVM.
     boot_config: Option<BootConfig>,
     /// The block devices.
-    pub block: BlockBuilder,
+    pub block: BlockBuilder<M>,
     /// The vsock device.
-    pub vsock: VsockBuilder,
+    pub vsock: VsockBuilder<M>,
     /// The balloon device.
-    pub balloon: BalloonBuilder,
+    pub balloon: BalloonBuilder<M>,
     /// The network devices builder.
-    pub net_builder: NetBuilder,
+    pub net_builder: NetBuilder<M>,
     /// The configuration for `MmdsNetworkStack`.
     pub mmds_config: Option<MmdsConfig>,
     /// Whether or not to load boot timer device.
     pub boot_timer: bool,
 }
 
-impl VmResources {
+impl<M: GuestMemory + Send + 'static + Default> VmResources<M> {
     /// Configures Vmm resources as described by the `config_json` param.
     pub fn from_json(
         config_json: &str,

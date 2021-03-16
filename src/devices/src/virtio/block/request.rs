@@ -11,7 +11,7 @@ use std::result;
 
 use logger::{IncMetric, METRICS};
 use virtio_gen::virtio_blk::*;
-use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
+use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryError, GuestMemoryMmap};
 
 use super::super::DescriptorChain;
 use super::device::{CacheType, DiskProperties};
@@ -107,16 +107,16 @@ impl RequestHeader {
     /// When running on a big endian platform, this code should not compile, and support
     /// for explicit little endian reads is required.
     #[cfg(target_endian = "little")]
-    fn read_from(memory: &GuestMemoryMmap, addr: GuestAddress) -> result::Result<Self, Error> {
+    fn read_from<M: GuestMemory>(memory: &M, addr: GuestAddress) -> result::Result<Self, Error> {
         let request_header: RequestHeader = memory.read_obj(addr).map_err(Error::GuestMemory)?;
         Ok(request_header)
     }
 }
 
 impl Request {
-    pub fn parse(
-        avail_desc: &DescriptorChain,
-        mem: &GuestMemoryMmap,
+    pub fn parse<M: GuestMemory>(
+        avail_desc: &DescriptorChain<M>,
+        mem: &M,
     ) -> result::Result<Request, Error> {
         // The head contains the request type which MUST be readable.
         if avail_desc.is_write_only() {
@@ -178,10 +178,10 @@ impl Request {
         Ok(req)
     }
 
-    pub(crate) fn execute(
+    pub(crate) fn execute<M: GuestMemory>(
         &self,
         disk: &mut DiskProperties,
-        mem: &GuestMemoryMmap,
+        mem: &M,
     ) -> result::Result<u32, ExecuteError> {
         let mut top: u64 = u64::from(self.data_len) / SECTOR_SIZE;
         if u64::from(self.data_len) % SECTOR_SIZE != 0 {

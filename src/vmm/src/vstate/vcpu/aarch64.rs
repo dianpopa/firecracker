@@ -93,9 +93,9 @@ impl KvmVcpu {
     /// * `vm_fd` - The kvm `VmFd` for this microvm.
     /// * `guest_mem` - The guest memory used by this microvm.
     /// * `kernel_load_addr` - Offset from `guest_mem` at which the kernel is loaded.
-    pub fn configure(
+    pub fn configure<M: GuestMemory>(
         &mut self,
-        guest_mem: &GuestMemoryMmap,
+        guest_mem: &M,
         kernel_load_addr: GuestAddress,
     ) -> Result<()> {
         arch::aarch64::regs::setup_boot_regs(

@@ -13,38 +13,124 @@
 //! This implementation is mmap-ing the memory of the guest into the current process.
 
 use std::borrow::Borrow;
-use std::io::{Error as IoError, Read, Write};
+use std::error;
+use std::fmt;
+use std::io::{Read, Write};
 use std::ops::Deref;
-use std::os::unix::io::AsRawFd;
-use std::ptr::null_mut;
 use std::result;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use vm_memory_upstream::address::Address;
-use vm_memory_upstream::guest_memory::{
-    self, FileOffset, GuestAddress, GuestMemory, GuestMemoryRegion, GuestUsize, MemoryRegionAddress,
+use crate::address::Address;
+use crate::bitmap::{Bitmap, WithBitmapSlice};
+use crate::guest_memory::{
+    self, FileOffset, GuestAddress, GuestMemory, GuestMemoryIterator, GuestMemoryRegion,
+    GuestUsize, MemoryRegionAddress,
 };
-use vm_memory_upstream::volatile_memory::{
-    Error as VolatileMemoryError, VolatileMemory, VolatileSlice,
-};
-use vm_memory_upstream::{AtomicAccess, ByteValued, Bytes};
+use crate::volatile_memory::{self, compute_offset, VolatileSlice};
+use crate::{AtomicAccess, Bytes};
 
-use vmm_sys_util::errno;
+#[cfg(unix)]
+pub use crate::mmap_unix::{Error as MmapRegionError, MmapRegion};
 
-use crate::bitmap::Bitmap;
+#[cfg(windows)]
+pub use crate::mmap_windows::MmapRegion;
+#[cfg(windows)]
+pub use std::io::Error as MmapRegionError;
 
-pub use vm_memory_upstream::mmap::{MmapRegion, MmapRegionError};
+/// A `Bitmap` that can be created starting from an initial size.
+pub trait NewBitmap: Bitmap + Default {
+    /// Create a new object based on the specified length in bytes.
+    fn with_len(len: usize) -> Self;
+}
 
-// Here are some things that originate in this module, and we can continue to use the upstream
-// definitions/implementations.
-pub use vm_memory_upstream::mmap::{check_file_offset, Error};
+impl NewBitmap for () {
+    fn with_len(_len: usize) -> Self {
+        ()
+    }
+}
 
-// The maximum number of bytes that can be read/written at a time.
-static MAX_ACCESS_CHUNK: usize = 4096;
+/// Trait implemented by the underlying `MmapRegion`.
+pub(crate) trait AsSlice {
+    /// Returns a slice corresponding to the data in the underlying `MmapRegion`.
+    ///
+    /// # Safety
+    ///
+    /// This is unsafe because of possible aliasing.
+    unsafe fn as_slice(&self) -> &[u8];
 
-// The number of guard pages per region is a multiple of 2.
-const GUARD_NUMBER: usize = 2;
+    /// Returns a mutable slice corresponding to the data in the underlying `MmapRegion`.
+    ///
+    /// # Safety
+    ///
+    /// This is unsafe because of possible aliasing.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn as_mut_slice(&self) -> &mut [u8];
+}
+
+/// Errors that can occur when creating a memory map.
+#[derive(Debug)]
+pub enum Error {
+    /// Adding the guest base address to the length of the underlying mapping resulted
+    /// in an overflow.
+    InvalidGuestRegion,
+    /// Error creating a `MmapRegion` object.
+    MmapRegion(MmapRegionError),
+    /// No memory region found.
+    NoMemoryRegion,
+    /// Some of the memory regions intersect with each other.
+    MemoryRegionOverlap,
+    /// The provided memory regions haven't been sorted.
+    UnsortedMemoryRegions,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::InvalidGuestRegion => write!(
+                f,
+                "Adding the guest base address to the length of the underlying mapping \
+                 resulted in an overflow"
+            ),
+            Error::MmapRegion(e) => write!(f, "{}", e),
+            Error::NoMemoryRegion => write!(f, "No memory region found"),
+            Error::MemoryRegionOverlap => {
+                write!(f, "Some of the memory regions intersect with each other")
+            }
+            Error::UnsortedMemoryRegions => {
+                write!(f, "The provided memory regions haven't been sorted")
+            }
+        }
+    }
+}
+
+impl error::Error for Error {}
+
+// TODO: use this for Windows as well after we redefine the Error type there.
+#[cfg(unix)]
+/// Checks if a mapping of `size` bytes fits at the provided `file_offset`.
+///
+/// For a borrowed `FileOffset` and size, this function checks whether the mapping does not
+/// extend past EOF, and that adding the size to the file offset does not lead to overflow.
+pub fn check_file_offset(
+    file_offset: &FileOffset,
+    size: usize,
+) -> result::Result<(), MmapRegionError> {
+    let file = file_offset.file();
+    let start = file_offset.start();
+
+    if let Some(end) = start.checked_add(size as u64) {
+        if let Ok(metadata) = file.metadata() {
+            if metadata.len() < end {
+                return Err(MmapRegionError::MappingPastEof);
+            }
+        }
+    } else {
+        return Err(MmapRegionError::InvalidOffsetLength);
+    }
+
+    Ok(())
+}
 
 /// [`GuestMemoryRegion`](trait.GuestMemoryRegion.html) implementation that mmaps the guest's
 /// memory region in the current process.
@@ -52,128 +138,13 @@ const GUARD_NUMBER: usize = 2;
 /// Represents a continuous region of the guest's physical memory that is backed by a mapping
 /// in the virtual address space of the calling process.
 #[derive(Debug)]
-pub struct GuestRegionMmap {
+pub struct GuestRegionMmap<B> {
     mapping: MmapRegion,
     guest_base: GuestAddress,
-    // handles dirty page tracking
-    dirty_bitmap: Option<Bitmap>,
+    bitmap: B,
 }
 
-impl GuestRegionMmap {
-    /// Create a new memory-mapped memory region for the guest's physical memory.
-    pub fn new(mapping: MmapRegion, guest_base: GuestAddress) -> result::Result<Self, Error> {
-        if guest_base.0.checked_add(mapping.len() as u64).is_none() {
-            return Err(Error::InvalidGuestRegion);
-        }
-        Ok(GuestRegionMmap {
-            mapping,
-            guest_base,
-            dirty_bitmap: None,
-        })
-    }
-
-    /// Provide the region with a dedicated bitmap to handle dirty page tracking.
-    pub fn enable_dirty_page_tracking(&mut self) {
-        let page_size = match unsafe { libc::sysconf(libc::_SC_PAGESIZE) } {
-            -1 => panic!(
-                "Failed to enable dirty page tracking: {}",
-                errno::Error::last()
-            ),
-            ps => ps as usize,
-        };
-        if self.dirty_bitmap.is_none() {
-            self.dirty_bitmap = Some(Bitmap::new(self.len() as usize, page_size));
-        }
-    }
-
-    /// Get the dirty page bitmap representative for this memory region (if any).
-    pub fn dirty_bitmap(&self) -> Option<&Bitmap> {
-        self.dirty_bitmap.as_ref()
-    }
-
-    /// Mark pages dirty starting from 'start_addr' and continuing for 'len' bytes.
-    pub fn mark_dirty_pages(&self, start_addr: usize, len: usize) {
-        if let Some(bitmap) = self.dirty_bitmap() {
-            bitmap.set_addr_range(start_addr, len);
-        }
-    }
-
-    // This is exclusively used for the local `Bytes` implementation.
-    fn local_volatile_slice(&self) -> VolatileSlice {
-        // It's safe to unwrap because we're starting at offset 0 and specify the exact
-        // length of the mapping.
-        self.mapping.get_slice(0, self.mapping.len()).unwrap()
-    }
-
-    /// Creates a guarded mapping based on the provided arguments.
-    /// Guard pages will be created at the beginning and the end of the range.
-    ///
-    /// # Arguments
-    /// * `file_offset` - if provided, the method will create a file mapping at offset
-    ///                   `file_offset.start` in the file referred to by `file_offset.file`.
-    /// * `size` - The size of the memory region in bytes.
-    /// * `prot` - The desired memory protection of the mapping.
-    /// * `flags` - This argument determines whether updates to the mapping are visible to other
-    ///             processes mapping the same region, and whether updates are carried through to
-    ///             the underlying file.
-    pub fn build_guarded(
-        file_offset: Option<FileOffset>,
-        size: usize,
-        prot: i32,
-        flags: i32,
-    ) -> Result<MmapRegion, MmapRegionError> {
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        // Create the guarded range size (received size + X pages),
-        // where X is defined as a constant GUARD_NUMBER.
-        let guarded_size = size + GUARD_NUMBER * page_size;
-
-        // Map the guarded range to PROT_NONE
-        let guard_addr = unsafe {
-            libc::mmap(
-                null_mut(),
-                guarded_size,
-                libc::PROT_NONE,
-                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-
-        if guard_addr == libc::MAP_FAILED {
-            return Err(MmapRegionError::Mmap(IoError::last_os_error()));
-        }
-
-        let (fd, offset) = if let Some(ref f_off) = file_offset {
-            check_file_offset(f_off, size)?;
-            (f_off.file().as_raw_fd(), f_off.start())
-        } else {
-            (-1, 0)
-        };
-
-        let map_addr = guard_addr as usize + page_size * (GUARD_NUMBER / 2);
-
-        // Inside the protected range, starting with guard_addr + PAGE_SIZE,
-        // map the requested range with received protection and flags
-        let addr = unsafe {
-            libc::mmap(
-                map_addr as *mut libc::c_void,
-                size,
-                prot,
-                flags | libc::MAP_FIXED,
-                fd,
-                offset as libc::off_t,
-            )
-        };
-
-        if addr == libc::MAP_FAILED {
-            return Err(MmapRegionError::Mmap(IoError::last_os_error()));
-        }
-
-        Ok(unsafe { MmapRegion::build_raw(addr as *mut u8, size, prot, flags)? })
-    }
-}
-
-impl Deref for GuestRegionMmap {
+impl<B> Deref for GuestRegionMmap<B> {
     type Target = MmapRegion;
 
     fn deref(&self) -> &MmapRegion {
@@ -181,66 +152,118 @@ impl Deref for GuestRegionMmap {
     }
 }
 
-impl Bytes<MemoryRegionAddress> for GuestRegionMmap {
+impl<B: NewBitmap> GuestRegionMmap<B> {
+    /// Create a new memory-mapped memory region for the guest's physical memory.
+    pub fn new(mapping: MmapRegion, guest_base: GuestAddress) -> result::Result<Self, Error> {
+        if guest_base.0.checked_add(mapping.size() as u64).is_none() {
+            return Err(Error::InvalidGuestRegion);
+        }
+
+        let bitmap = B::with_len(mapping.size());
+
+        Ok(GuestRegionMmap {
+            mapping,
+            guest_base,
+            bitmap,
+        })
+    }
+}
+
+impl<B: NewBitmap> Bytes<MemoryRegionAddress> for GuestRegionMmap<B> {
     type E = guest_memory::Error;
 
+    /// # Examples
+    /// * Write a slice at guest address 0x1200.
+    ///
+    /// ```
+    /// # use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+    /// #
+    /// # let start_addr = GuestAddress(0x1000);
+    /// # let mut gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// #    .expect("Could not create guest memory");
+    /// #
+    /// let res = gm
+    ///     .write(&[1, 2, 3, 4, 5], GuestAddress(0x1200))
+    ///     .expect("Could not write to guest memory");
+    /// assert_eq!(5, res);
+    /// ```
     fn write(&self, buf: &[u8], addr: MemoryRegionAddress) -> guest_memory::Result<usize> {
         let maddr = addr.raw_value() as usize;
-        let bytes = self
-            .local_volatile_slice()
+        self.as_volatile_slice()
+            .unwrap()
             .write(buf, maddr)
-            .map_err(Into::<guest_memory::Error>::into)?;
-        self.mark_dirty_pages(maddr, bytes);
-        Ok(bytes)
+            .map_err(Into::into)
     }
 
+    /// # Examples
+    /// * Read a slice of length 16 at guestaddress 0x1200.
+    ///
+    /// ```
+    /// # use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+    /// #
+    /// # let start_addr = GuestAddress(0x1000);
+    /// # let mut gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// #    .expect("Could not create guest memory");
+    /// #
+    /// let buf = &mut [0u8; 16];
+    /// let res = gm
+    ///     .read(buf, GuestAddress(0x1200))
+    ///     .expect("Could not read from guest memory");
+    /// assert_eq!(16, res);
+    /// ```
     fn read(&self, buf: &mut [u8], addr: MemoryRegionAddress) -> guest_memory::Result<usize> {
         let maddr = addr.raw_value() as usize;
-        self.local_volatile_slice()
+        self.as_volatile_slice()
+            .unwrap()
             .read(buf, maddr)
             .map_err(Into::into)
     }
 
     fn write_slice(&self, buf: &[u8], addr: MemoryRegionAddress) -> guest_memory::Result<()> {
         let maddr = addr.raw_value() as usize;
-        match self.local_volatile_slice().write_slice(buf, maddr) {
-            Ok(()) => {
-                self.mark_dirty_pages(maddr, buf.len());
-                Ok(())
-            }
-            Err(e) => {
-                if let VolatileMemoryError::PartialBuffer { completed, .. } = e {
-                    self.mark_dirty_pages(maddr, completed);
-                }
-                Err(e.into())
-            }
-        }
+        self.as_volatile_slice()
+            .unwrap()
+            .write_slice(buf, maddr)
+            .map_err(Into::into)
     }
 
     fn read_slice(&self, buf: &mut [u8], addr: MemoryRegionAddress) -> guest_memory::Result<()> {
         let maddr = addr.raw_value() as usize;
-        self.local_volatile_slice()
+        self.as_volatile_slice()
+            .unwrap()
             .read_slice(buf, maddr)
             .map_err(Into::into)
     }
 
-    // Add explicit implementations for the `*_obj` methods, just in case something changes
-    // with the default logic provided in `Bytes`.
-    fn write_obj<T: ByteValued>(
-        &self,
-        val: T,
-        addr: MemoryRegionAddress,
-    ) -> guest_memory::Result<()> {
-        // Write dispatched to write_slice.
-        self.write_slice(val.as_slice(), addr)
-    }
-
-    fn read_obj<T: ByteValued>(&self, addr: MemoryRegionAddress) -> guest_memory::Result<T> {
-        let mut result: T = Default::default();
-        // Read dispatched to `read_slice`.
-        self.read_slice(result.as_mut_slice(), addr).map(|_| result)
-    }
-
+    /// # Examples
+    ///
+    /// * Read bytes from /dev/urandom
+    ///
+    /// ```
+    /// # use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+    /// # use std::fs::File;
+    /// # use std::path::Path;
+    /// #
+    /// # let start_addr = GuestAddress(0x1000);
+    /// # let gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// #    .expect("Could not create guest memory");
+    /// # let addr = GuestAddress(0x1010);
+    /// # let mut file = if cfg!(unix) {
+    /// let mut file = File::open(Path::new("/dev/urandom")).expect("Could not open /dev/urandom");
+    /// #   file
+    /// # } else {
+    /// #   File::open(Path::new("c:\\Windows\\system32\\ntoskrnl.exe"))
+    /// #       .expect("Could not open c:\\Windows\\system32\\ntoskrnl.exe")
+    /// # };
+    ///
+    /// gm.read_from(addr, &mut file, 128)
+    ///     .expect("Could not read from /dev/urandom into guest memory");
+    ///
+    /// let read_addr = addr.checked_add(8).expect("Could not compute read address");
+    /// let rand_val: u32 = gm
+    ///     .read_obj(read_addr)
+    ///     .expect("Could not read u32 val from /dev/urandom");
+    /// ```
     fn read_from<F>(
         &self,
         addr: MemoryRegionAddress,
@@ -251,14 +274,41 @@ impl Bytes<MemoryRegionAddress> for GuestRegionMmap {
         F: Read,
     {
         let maddr = addr.raw_value() as usize;
-        let bytes = self
-            .local_volatile_slice()
+        self.as_volatile_slice()
+            .unwrap()
             .read_from::<F>(maddr, src, count)
-            .map_err(Into::<guest_memory::Error>::into)?;
-        self.mark_dirty_pages(maddr, bytes);
-        Ok(bytes)
+            .map_err(Into::into)
     }
 
+    /// # Examples
+    ///
+    /// * Read bytes from /dev/urandom
+    ///
+    /// ```
+    /// # use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+    /// # use std::fs::File;
+    /// # use std::path::Path;
+    /// #
+    /// # let start_addr = GuestAddress(0x1000);
+    /// # let gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// #    .expect("Could not create guest memory");
+    /// # let addr = GuestAddress(0x1010);
+    /// # let mut file = if cfg!(unix) {
+    /// let mut file = File::open(Path::new("/dev/urandom")).expect("Could not open /dev/urandom");
+    /// #   file
+    /// # } else {
+    /// #   File::open(Path::new("c:\\Windows\\system32\\ntoskrnl.exe"))
+    /// #       .expect("Could not open c:\\Windows\\system32\\ntoskrnl.exe")
+    /// # };
+    ///
+    /// gm.read_exact_from(addr, &mut file, 128)
+    ///     .expect("Could not read from /dev/urandom into guest memory");
+    ///
+    /// let read_addr = addr.checked_add(8).expect("Could not compute read address");
+    /// let rand_val: u32 = gm
+    ///     .read_obj(read_addr)
+    ///     .expect("Could not read u32 val from /dev/urandom");
+    /// ```
     fn read_exact_from<F>(
         &self,
         addr: MemoryRegionAddress,
@@ -269,13 +319,41 @@ impl Bytes<MemoryRegionAddress> for GuestRegionMmap {
         F: Read,
     {
         let maddr = addr.raw_value() as usize;
-        self.local_volatile_slice()
+        self.as_volatile_slice()
+            .unwrap()
             .read_exact_from::<F>(maddr, src, count)
-            .map_err(Into::<guest_memory::Error>::into)?;
-        self.mark_dirty_pages(maddr, count);
-        Ok(())
+            .map_err(Into::into)
     }
 
+    /// Writes data from the region to a writable object.
+    ///
+    /// # Examples
+    ///
+    /// * Write 128 bytes to a /dev/null file
+    ///
+    /// ```
+    /// # #[cfg(not(unix))]
+    /// # extern crate vmm_sys_util;
+    /// # use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+    /// #
+    /// # let start_addr = GuestAddress(0x1000);
+    /// # let gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// #    .expect("Could not create guest memory");
+    /// # let mut file = if cfg!(unix) {
+    /// # use std::fs::OpenOptions;
+    /// let mut file = OpenOptions::new()
+    ///     .write(true)
+    ///     .open("/dev/null")
+    ///     .expect("Could not open /dev/null");
+    /// #   file
+    /// # } else {
+    /// #   use vmm_sys_util::tempfile::TempFile;
+    /// #   TempFile::new().unwrap().into_file()
+    /// # };
+    ///
+    /// gm.write_to(start_addr, &mut file, 128)
+    ///     .expect("Could not write to file from guest memory");
+    /// ```
     fn write_to<F>(
         &self,
         addr: MemoryRegionAddress,
@@ -286,11 +364,41 @@ impl Bytes<MemoryRegionAddress> for GuestRegionMmap {
         F: Write,
     {
         let maddr = addr.raw_value() as usize;
-        self.local_volatile_slice()
+        self.as_volatile_slice()
+            .unwrap()
             .write_to::<F>(maddr, dst, count)
             .map_err(Into::into)
     }
 
+    /// Writes data from the region to a writable object.
+    ///
+    /// # Examples
+    ///
+    /// * Write 128 bytes to a /dev/null file
+    ///
+    /// ```
+    /// # #[cfg(not(unix))]
+    /// # extern crate vmm_sys_util;
+    /// # use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+    /// #
+    /// # let start_addr = GuestAddress(0x1000);
+    /// # let gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// #    .expect("Could not create guest memory");
+    /// # let mut file = if cfg!(unix) {
+    /// # use std::fs::OpenOptions;
+    /// let mut file = OpenOptions::new()
+    ///     .write(true)
+    ///     .open("/dev/null")
+    ///     .expect("Could not open /dev/null");
+    /// #   file
+    /// # } else {
+    /// #   use vmm_sys_util::tempfile::TempFile;
+    /// #   TempFile::new().unwrap().into_file()
+    /// # };
+    ///
+    /// gm.write_all_to(start_addr, &mut file, 128)
+    ///     .expect("Could not write to file from guest memory");
+    /// ```
     fn write_all_to<F>(
         &self,
         addr: MemoryRegionAddress,
@@ -301,65 +409,47 @@ impl Bytes<MemoryRegionAddress> for GuestRegionMmap {
         F: Write,
     {
         let maddr = addr.raw_value() as usize;
-        self.local_volatile_slice()
+        self.as_volatile_slice()
+            .unwrap()
             .write_all_to::<F>(maddr, dst, count)
             .map_err(Into::into)
     }
 
     fn store<T: AtomicAccess>(
         &self,
-        _val: T,
-        _addr: MemoryRegionAddress,
-        _order: Ordering,
+        val: T,
+        addr: MemoryRegionAddress,
+        order: Ordering,
     ) -> guest_memory::Result<()> {
-        // We do not use this.
-        Err(guest_memory::Error::HostAddressNotAvailable)
+        self.as_volatile_slice().and_then(|s| {
+            s.store(val, addr.raw_value() as usize, order)
+                .map_err(Into::into)
+        })
     }
 
     fn load<T: AtomicAccess>(
         &self,
-        _addr: MemoryRegionAddress,
-        _order: Ordering,
+        addr: MemoryRegionAddress,
+        order: Ordering,
     ) -> guest_memory::Result<T> {
-        // We do not use this.
-        Err(guest_memory::Error::HostAddressNotAvailable)
+        self.as_volatile_slice()
+            .and_then(|s| s.load(addr.raw_value() as usize, order).map_err(Into::into))
     }
 }
 
-impl GuestMemoryRegion for GuestRegionMmap {
+impl<B: NewBitmap> GuestMemoryRegion for GuestRegionMmap<B> {
+    type B = B;
+
     fn len(&self) -> GuestUsize {
-        self.mapping.len() as GuestUsize
+        self.mapping.size() as GuestUsize
     }
 
     fn start_addr(&self) -> GuestAddress {
         self.guest_base
     }
 
-    fn file_offset(&self) -> Option<&FileOffset> {
-        self.mapping.file_offset()
-    }
-
-    // TODO: This implementation is temporary.
-    // We need to return None here once we refactor vsock.
-    unsafe fn as_slice(&self) -> Option<&[u8]> {
-        // This is safe because we mapped the area at addr ourselves, so this slice will not
-        // overflow. However, it is possible to alias.
-        Some(std::slice::from_raw_parts(
-            self.mapping.as_ptr(),
-            self.mapping.size(),
-        ))
-    }
-
-    // TODO: This implementation is temporary.
-    // We need to return None here once we refactor vsock.
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn as_mut_slice(&self) -> Option<&mut [u8]> {
-        // This is safe because we mapped the area at addr ourselves, so this slice will not
-        // overflow. However, it is possible to alias.
-        Some(std::slice::from_raw_parts_mut(
-            self.mapping.as_ptr(),
-            self.mapping.size(),
-        ))
+    fn bitmap(&self) -> &Self::B {
+        &self.bitmap
     }
 
     fn get_host_address(&self, addr: MemoryRegionAddress) -> guest_memory::Result<*mut u8> {
@@ -367,23 +457,52 @@ impl GuestMemoryRegion for GuestRegionMmap {
         // is safe because we've just range-checked addr using check_address.
         self.check_address(addr)
             .ok_or(guest_memory::Error::InvalidBackendAddress)
-            .map(|addr| self.as_ptr().wrapping_offset(addr.raw_value() as isize))
+            .map(|addr| {
+                self.mapping
+                    .as_ptr()
+                    .wrapping_offset(addr.raw_value() as isize)
+            })
     }
 
-    // TODO: This implementation is temporary.
-    // We need to return None here once we refactor vsock.
+    fn file_offset(&self) -> Option<&FileOffset> {
+        self.mapping.file_offset()
+    }
+
+    unsafe fn as_slice(&self) -> Option<&[u8]> {
+        Some(self.mapping.as_slice())
+    }
+
+    unsafe fn as_mut_slice(&self) -> Option<&mut [u8]> {
+        Some(self.mapping.as_mut_slice())
+    }
+
     fn get_slice(
         &self,
         offset: MemoryRegionAddress,
         count: usize,
-    ) -> guest_memory::Result<VolatileSlice> {
-        let slice = self.mapping.get_slice(offset.raw_value() as usize, count)?;
-        Ok(slice)
+    ) -> guest_memory::Result<VolatileSlice<<B as WithBitmapSlice>::S>> {
+        // TODO: MemoryRegionAddress should probably have usize as the inner type anyway.
+        let offset = offset.0 as usize;
+
+        let end = compute_offset(offset as usize, count)?;
+        if end > self.mapping.size() {
+            return Err(volatile_memory::Error::OutOfBounds { addr: end }.into());
+        }
+
+        // Safe because we checked that offset + count was within our range and we only ever hand
+        // out volatile accessors.
+        Ok(unsafe {
+            VolatileSlice::new(
+                (self.mapping.as_ptr() as usize + offset) as *mut _,
+                count,
+                self.bitmap.slice_at(offset),
+            )
+        })
     }
 
-    fn as_volatile_slice(&self) -> guest_memory::Result<VolatileSlice> {
-        // We do not use this.
-        Err(guest_memory::Error::HostAddressNotAvailable)
+    #[cfg(target_os = "linux")]
+    fn is_hugetlbfs(&self) -> Option<bool> {
+        self.mapping.is_hugetlbfs()
     }
 }
 
@@ -394,11 +513,11 @@ impl GuestMemoryRegion for GuestRegionMmap {
 /// Each region is an instance of `GuestRegionMmap`, being backed by a mapping in the
 /// virtual address space of the calling process.
 #[derive(Clone, Debug, Default)]
-pub struct GuestMemoryMmap {
-    regions: Vec<Arc<GuestRegionMmap>>,
+pub struct GuestMemoryMmap<B> {
+    regions: Vec<Arc<GuestRegionMmap<B>>>,
 }
 
-impl GuestMemoryMmap {
+impl<B: NewBitmap> GuestMemoryMmap<B> {
     /// Creates an empty `GuestMemoryMmap` instance.
     pub fn new() -> Self {
         Self::default()
@@ -408,56 +527,17 @@ impl GuestMemoryMmap {
     ///
     /// Valid memory regions are specified as a slice of (Address, Size) tuples sorted by Address.
     pub fn from_ranges(ranges: &[(GuestAddress, usize)]) -> result::Result<Self, Error> {
-        Self::from_ranges_with_files(ranges.iter().map(|r| (r.0, r.1, None)), false)
+        Self::from_ranges_with_files(ranges.iter().map(|r| (r.0, r.1, None)))
     }
 
-    /// Creates a container, allocates anonymous memory for guest memory regions and enables dirty
-    /// page tracking.
-    ///
-    /// Valid memory regions are specified as a slice of (Address, Size) tuples sorted by Address.
-    pub fn from_ranges_with_tracking(
-        ranges: &[(GuestAddress, usize)],
-    ) -> result::Result<Self, Error> {
-        Self::from_ranges_with_files(ranges.iter().map(|r| (r.0, r.1, None)), true)
-    }
-
-    /// Creates a container and allocates anonymous memory for guest memory regions. Each region is surrounded by
-    /// page guards. Allows the setting of dirty page tracking.
-    ///
-    /// Valid memory regions are specified as a slice of (Address, Size) tuples sorted by Address. It is imporant
-    /// to note that Size has to be a page size multiple.
-    pub fn from_ranges_guarded(
-        ranges: &[(GuestAddress, usize)],
-        track_dirty_pages: bool,
-    ) -> result::Result<Self, Error> {
-        Self::from_ranges_with_files_guarded(
-            ranges.iter().map(|r| (r.0, r.1, None)),
-            track_dirty_pages,
-        )
-    }
-
-    /// Helper function for from_ranges_with_files.
-    /// Allows setting a custom memory range build function.
-    ///
     /// Creates a container and allocates anonymous memory for guest memory regions.
     ///
-    /// # Arguments
-    ///
-    /// * 'ranges' - Iterator over a sequence of (Address, Size, Option<FileOffset>)
-    ///              tuples sorted by Address.
-    /// * 'track_dirty_pages' - Whether or not dirty page tracking is enabled.
-    ///                         If set, it creates a dedicated bitmap for tracing memory writes
-    ///                         specific to every region.
-    /// * 'build_fn' - A function that builds and returns a MmapRegion.
-    fn from_ranges_with_files_helper<A, T, F>(
-        ranges: T,
-        track_dirty_pages: bool,
-        mut build_fn: F,
-    ) -> result::Result<Self, Error>
+    /// Valid memory regions are specified as a sequence of (Address, Size, Option<FileOffset>)
+    /// tuples sorted by Address.
+    pub fn from_ranges_with_files<A, T>(ranges: T) -> result::Result<Self, Error>
     where
         A: Borrow<(GuestAddress, usize, Option<FileOffset>)>,
         T: IntoIterator<Item = A>,
-        F: FnMut(Option<FileOffset>, usize) -> Result<MmapRegion, MmapRegionError>,
     {
         Self::from_regions(
             ranges
@@ -466,84 +546,15 @@ impl GuestMemoryMmap {
                     let guest_base = x.borrow().0;
                     let size = x.borrow().1;
 
-                    build_fn(x.borrow().2.clone(), size)
-                        .map_err(Error::MmapRegion)
-                        .and_then(|r| {
-                            let mut mmap = GuestRegionMmap::new(r, guest_base)?;
-                            if track_dirty_pages {
-                                mmap.enable_dirty_page_tracking();
-                            }
-                            Ok(mmap)
-                        })
+                    if let Some(ref f_off) = x.borrow().2 {
+                        MmapRegion::from_file(f_off.clone(), size)
+                    } else {
+                        MmapRegion::new(size)
+                    }
+                    .map_err(Error::MmapRegion)
+                    .and_then(|r| GuestRegionMmap::new(r, guest_base))
                 })
                 .collect::<result::Result<Vec<_>, Error>>()?,
-        )
-    }
-
-    /// Creates a container and allocates anonymous memory for guest memory regions.
-    ///
-    /// # Arguments
-    ///
-    /// * 'ranges' - Iterator over a sequence of (Address, Size, Option<FileOffset>)
-    ///              tuples sorted by Address.
-    /// * 'track_dirty_pages' - Whether or not dirty page tracking is enabled.
-    ///                         If set, it creates a dedicated bitmap for tracing memory writes
-    ///                         specific to every region.
-    pub fn from_ranges_with_files<A, T>(
-        ranges: T,
-        track_dirty_pages: bool,
-    ) -> result::Result<Self, Error>
-    where
-        A: Borrow<(GuestAddress, usize, Option<FileOffset>)>,
-        T: IntoIterator<Item = A>,
-    {
-        Self::from_ranges_with_files_helper(
-            ranges,
-            track_dirty_pages,
-            |file_offset: Option<FileOffset>, size: usize| -> Result<MmapRegion, MmapRegionError> {
-                if let Some(ref f_off) = file_offset {
-                    MmapRegion::from_file(f_off.clone(), size)
-                } else {
-                    MmapRegion::new(size)
-                }
-            },
-        )
-    }
-
-    /// Creates a container and allocates anonymous memory for guest memory regions.
-    /// Each region is surrounded by guard pages.
-    ///
-    /// The size of each guest memory region has to be a multiple of page size.
-    ///
-    /// # Arguments
-    ///
-    /// * 'ranges' - Iterator over a sequence of (Address, Size, Option<FileOffset>)
-    ///              tuples sorted by Address.
-    /// * 'track_dirty_pages' - Whether or not dirty page tracking is enabled.
-    ///                         If set, it creates a dedicated bitmap for tracing memory writes
-    ///                         specific to every region.
-    pub fn from_ranges_with_files_guarded<A, T>(
-        ranges: T,
-        track_dirty_pages: bool,
-    ) -> result::Result<Self, Error>
-    where
-        A: Borrow<(GuestAddress, usize, Option<FileOffset>)>,
-        T: IntoIterator<Item = A>,
-    {
-        Self::from_ranges_with_files_helper(
-            ranges,
-            track_dirty_pages,
-            |file_offset: Option<FileOffset>, size: usize| -> Result<MmapRegion, MmapRegionError> {
-                let prot = libc::PROT_READ | libc::PROT_WRITE;
-                let file_flags = libc::MAP_NORESERVE | libc::MAP_SHARED;
-                let create_flags = libc::MAP_NORESERVE | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
-
-                if let Some(ref f_off) = file_offset {
-                    GuestRegionMmap::build_guarded(Some(f_off.clone()), size, prot, file_flags)
-                } else {
-                    GuestRegionMmap::build_guarded(None, size, prot, create_flags)
-                }
-            },
         )
     }
 
@@ -554,23 +565,23 @@ impl GuestMemoryMmap {
     /// * `regions` - The vector of regions.
     ///               The regions shouldn't overlap and they should be sorted
     ///               by the starting address.
-    pub fn from_regions(mut regions: Vec<GuestRegionMmap>) -> result::Result<Self, Error> {
+    pub fn from_regions(mut regions: Vec<GuestRegionMmap<B>>) -> result::Result<Self, Error> {
         Self::from_arc_regions(regions.drain(..).map(Arc::new).collect())
     }
 
     /// Creates a new `GuestMemoryMmap` from a vector of Arc regions.
     ///
-    /// Similar to the constructor from_regions() as it returns a
-    /// GuestMemoryMmap. The need for this constructor is to provide a way for
-    /// consumer of this API to create a new GuestMemoryMmap based on existing
-    /// regions coming from an existing GuestMemoryMmap instance.
+    /// Similar to the constructor `from_regions()` as it returns a
+    /// `GuestMemoryMmap`. The need for this constructor is to provide a way for
+    /// consumer of this API to create a new `GuestMemoryMmap` based on existing
+    /// regions coming from an existing `GuestMemoryMmap` instance.
     ///
     /// # Arguments
     ///
-    /// * `regions` - The vector of Arc regions.
+    /// * `regions` - The vector of `Arc` regions.
     ///               The regions shouldn't overlap and they should be sorted
     ///               by the starting address.
-    pub fn from_arc_regions(regions: Vec<Arc<GuestRegionMmap>>) -> result::Result<Self, Error> {
+    pub fn from_arc_regions(regions: Vec<Arc<GuestRegionMmap<B>>>) -> result::Result<Self, Error> {
         if regions.is_empty() {
             return Err(Error::NoMemoryRegion);
         }
@@ -594,20 +605,13 @@ impl GuestMemoryMmap {
     /// Insert a region into the `GuestMemoryMmap` object and return a new `GuestMemoryMmap`.
     ///
     /// # Arguments
-    /// * `region` - the memory region to insert into the guest memory object.
+    /// * `region`: the memory region to insert into the guest memory object.
     pub fn insert_region(
         &self,
-        mut region: GuestRegionMmap,
-    ) -> result::Result<GuestMemoryMmap, Error> {
-        let dirty_page_tracking = self.is_dirty_tracking_enabled();
-        if dirty_page_tracking {
-            region.enable_dirty_page_tracking();
-        } else {
-            region.dirty_bitmap = None;
-        }
-
+        region: Arc<GuestRegionMmap<B>>,
+    ) -> result::Result<GuestMemoryMmap<B>, Error> {
         let mut regions = self.regions.clone();
-        regions.push(Arc::new(region));
+        regions.push(region);
         regions.sort_by_key(|x| x.start_addr());
 
         Self::from_arc_regions(regions)
@@ -617,15 +621,15 @@ impl GuestMemoryMmap {
     /// on success, together with the removed region.
     ///
     /// # Arguments
-    /// * `base` - base address of the region to be removed
-    /// * `size` - size of the region to be removed
+    /// * `base`: base address of the region to be removed
+    /// * `size`: size of the region to be removed
     pub fn remove_region(
         &self,
         base: GuestAddress,
         size: GuestUsize,
-    ) -> result::Result<(GuestMemoryMmap, Arc<GuestRegionMmap>), Error> {
+    ) -> result::Result<(GuestMemoryMmap<B>, Arc<GuestRegionMmap<B>>), Error> {
         if let Ok(region_index) = self.regions.binary_search_by_key(&base, |x| x.start_addr()) {
-            if self.regions.get(region_index).unwrap().size() as GuestUsize == size {
+            if self.regions.get(region_index).unwrap().mapping.size() as GuestUsize == size {
                 let mut regions = self.regions.clone();
                 let region = regions.remove(region_index);
                 return Ok((Self { regions }, region));
@@ -634,74 +638,34 @@ impl GuestMemoryMmap {
 
         Err(Error::InvalidGuestRegion)
     }
+}
 
-    /// Return true if dirty page tracking is enabled for `GuestMemoryMmap`, and else otherwise.
-    pub fn is_dirty_tracking_enabled(&self) -> bool {
-        self.regions.iter().all(|r| r.dirty_bitmap().is_some())
-    }
+/// An iterator over the elements of `GuestMemoryMmap`.
+///
+/// This struct is created by `GuestMemory::iter()`. See its documentation for more.
+pub struct Iter<'a, B>(std::slice::Iter<'a, Arc<GuestRegionMmap<B>>>);
 
-    pub fn read_from<F>(
-        &self,
-        addr: GuestAddress,
-        src: &mut F,
-        count: usize,
-    ) -> result::Result<usize, vm_memory_upstream::guest_memory::Error>
-    where
-        F: Read,
-    {
-        self.try_access(
-            count,
-            addr,
-            |_offset,
-             len,
-             caddr,
-             region|
-             -> result::Result<usize, vm_memory_upstream::guest_memory::Error> {
-                let len = std::cmp::min(len, MAX_ACCESS_CHUNK);
-                let mut buf = vec![0u8; len].into_boxed_slice();
-                loop {
-                    match src.read(&mut buf[..]) {
-                        Ok(bytes_read) => {
-                            let bytes_written = region.write(&buf[0..bytes_read], caddr)?;
-                            assert_eq!(bytes_written, bytes_read);
-                            break Ok(bytes_read);
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(e) => break Err(vm_memory_upstream::guest_memory::Error::IOError(e)),
-                    }
-                }
-            },
-        )
-    }
-
-    pub fn read_exact_from<F>(
-        &self,
-        addr: GuestAddress,
-        src: &mut F,
-        count: usize,
-    ) -> result::Result<(), vm_memory_upstream::guest_memory::Error>
-    where
-        F: Read,
-    {
-        let res = self.read_from(addr, src, count)?;
-        if res != count {
-            return Err(vm_memory_upstream::guest_memory::Error::PartialBuffer {
-                expected: count,
-                completed: res,
-            });
-        }
-        Ok(())
+impl<'a, B> Iterator for Iter<'a, B> {
+    type Item = &'a GuestRegionMmap<B>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(AsRef::as_ref)
     }
 }
 
-impl GuestMemory for GuestMemoryMmap {
-    type R = GuestRegionMmap;
+impl<'a, B: 'a> GuestMemoryIterator<'a, GuestRegionMmap<B>> for GuestMemoryMmap<B> {
+    type Iter = Iter<'a, B>;
+}
+
+impl<B: NewBitmap + 'static> GuestMemory for GuestMemoryMmap<B> {
+    type R = GuestRegionMmap<B>;
+
+    type I = Self;
 
     fn num_regions(&self) -> usize {
         self.regions.len()
     }
 
-    fn find_region(&self, addr: GuestAddress) -> Option<&GuestRegionMmap> {
+    fn find_region(&self, addr: GuestAddress) -> Option<&GuestRegionMmap<B>> {
         let index = match self.regions.binary_search_by_key(&addr, |x| x.start_addr()) {
             Ok(x) => Some(x),
             // Within the closest region with starting address < addr
@@ -711,36 +675,8 @@ impl GuestMemory for GuestMemoryMmap {
         index.map(|x| self.regions[x].as_ref())
     }
 
-    fn with_regions<F, E>(&self, cb: F) -> result::Result<(), E>
-    where
-        F: Fn(usize, &Self::R) -> result::Result<(), E>,
-    {
-        for (index, region) in self.regions.iter().enumerate() {
-            cb(index, region)?;
-        }
-        Ok(())
-    }
-
-    fn with_regions_mut<F, E>(&self, mut cb: F) -> result::Result<(), E>
-    where
-        F: FnMut(usize, &Self::R) -> result::Result<(), E>,
-    {
-        for (index, region) in self.regions.iter().enumerate() {
-            cb(index, region)?;
-        }
-        Ok(())
-    }
-
-    fn map_and_fold<F, G, T>(&self, init: T, mapf: F, foldf: G) -> T
-    where
-        F: Fn((usize, &Self::R)) -> T,
-        G: Fn(T, T) -> T,
-    {
-        self.regions
-            .iter()
-            .enumerate()
-            .map(|(idx, region)| mapf((idx, region.as_ref())))
-            .fold(init, foldf)
+    fn iter(&self) -> Iter<B> {
+        Iter(self.regions.iter())
     }
 }
 
@@ -749,86 +685,23 @@ mod tests {
     extern crate vmm_sys_util;
 
     use super::*;
-    use vm_memory_upstream::GuestAddressSpace;
+
+    use crate::bitmap::tests::test_guest_memory_and_region;
+    use crate::bitmap::AtomicBitmap;
+    use crate::{GuestAddressSpace, GuestMemory, GuestMemoryRegion, VolatileMemory};
 
     use std::fs::File;
     use std::mem;
     use std::path::Path;
     use vmm_sys_util::tempfile::TempFile;
 
+    type GuestMemoryMmap = super::GuestMemoryMmap<()>;
+    type GuestRegionMmap = super::GuestRegionMmap<()>;
+
     #[test]
     fn basic_map() {
         let m = MmapRegion::new(1024).unwrap();
-        assert_eq!(1024, m.len());
-    }
-
-    #[test]
-    fn test_guest_region_mmap() {
-        let mut mmap =
-            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0xc000)).unwrap();
-        assert!(mmap.dirty_bitmap().is_none());
-
-        mmap.enable_dirty_page_tracking();
-        assert!(mmap.dirty_bitmap().is_some());
-
-        mmap.mark_dirty_pages(128, 129);
-        let bitmap = mmap.dirty_bitmap().unwrap();
-        assert!(bitmap.is_addr_set(128));
-        assert!(!bitmap.is_addr_set(4097));
-
-        // check that enabling dirty page tracking multiple times
-        // does not override the bitmap
-        mmap.enable_dirty_page_tracking();
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(128));
-    }
-
-    #[test]
-    fn test_bitmap_update_on_write() {
-        let page_size = 4096 as usize;
-        let mut mmap =
-            GuestRegionMmap::new(MmapRegion::new(page_size * 5).unwrap(), GuestAddress(0x0))
-                .unwrap();
-        mmap.enable_dirty_page_tracking();
-
-        // check write_obj
-        let sample_val = 0xaa55_aa55_aa55_aa55 as u64;
-        assert!(!mmap.dirty_bitmap().unwrap().is_addr_set(0));
-        assert!(mmap.write_obj(sample_val, MemoryRegionAddress(0)).is_ok());
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(0));
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(page_size - 1));
-
-        // check write; dirty same page twice
-        let sample_buf = [1, 2, 3];
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(100));
-        assert!(mmap.write(&sample_buf, MemoryRegionAddress(100)).is_ok());
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(100));
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(102));
-
-        // check read_from
-        let mut file = File::open(Path::new("/dev/zero")).unwrap();
-        assert!(!mmap.dirty_bitmap().unwrap().is_addr_set(page_size));
-        assert!(mmap
-            .read_from(
-                MemoryRegionAddress(page_size as u64),
-                &mut file,
-                mem::size_of::<u32>()
-            )
-            .is_ok());
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(page_size));
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(page_size * 2 - 1));
-
-        // check read_exact_from; dirty multiple pages
-        assert!(!mmap.dirty_bitmap().unwrap().is_addr_set(page_size * 2));
-        assert!(mmap
-            .read_exact_from(
-                MemoryRegionAddress(page_size as u64 * 2),
-                &mut file,
-                page_size * 2 + 1
-            )
-            .is_ok());
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(page_size * 2));
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(page_size * 3));
-        assert!(mmap.dirty_bitmap().unwrap().is_addr_set(page_size * 4));
+        assert_eq!(1024, m.size());
     }
 
     fn check_guest_memory_mmap(
@@ -907,13 +780,7 @@ mod tests {
             })
             .collect();
 
-        GuestMemoryMmap::from_ranges_with_files(&regions, false)
-    }
-
-    fn new_guest_memory_mmap_with_tracking(
-        regions_summary: &[(GuestAddress, usize)],
-    ) -> Result<GuestMemoryMmap, Error> {
-        GuestMemoryMmap::from_ranges_with_tracking(regions_summary)
+        GuestMemoryMmap::from_ranges_with_files(&regions)
     }
 
     #[test]
@@ -924,16 +791,6 @@ mod tests {
             format!(
                 "{:?}",
                 new_guest_memory_mmap(&regions_summary).err().unwrap()
-            ),
-            format!("{:?}", Error::NoMemoryRegion)
-        );
-
-        assert_eq!(
-            format!(
-                "{:?}",
-                new_guest_memory_mmap_with_tracking(&regions_summary)
-                    .err()
-                    .unwrap()
             ),
             format!("{:?}", Error::NoMemoryRegion)
         );
@@ -987,16 +844,6 @@ mod tests {
         assert_eq!(
             format!(
                 "{:?}",
-                new_guest_memory_mmap_with_tracking(&regions_summary)
-                    .err()
-                    .unwrap()
-            ),
-            format!("{:?}", Error::MemoryRegionOverlap)
-        );
-
-        assert_eq!(
-            format!(
-                "{:?}",
                 new_guest_memory_mmap_with_files(&regions_summary)
                     .err()
                     .unwrap()
@@ -1036,16 +883,6 @@ mod tests {
             format!(
                 "{:?}",
                 new_guest_memory_mmap(&regions_summary).err().unwrap()
-            ),
-            format!("{:?}", Error::UnsortedMemoryRegions)
-        );
-
-        assert_eq!(
-            format!(
-                "{:?}",
-                new_guest_memory_mmap_with_tracking(&regions_summary)
-                    .err()
-                    .unwrap()
             ),
             format!("{:?}", Error::UnsortedMemoryRegions)
         );
@@ -1094,11 +931,6 @@ mod tests {
         check_guest_memory_mmap(new_guest_memory_mmap(&regions_summary), &regions_summary);
 
         check_guest_memory_mmap(
-            new_guest_memory_mmap_with_tracking(&regions_summary),
-            &regions_summary,
-        );
-
-        check_guest_memory_mmap(
             new_guest_memory_mmap_with_files(&regions_summary),
             &regions_summary,
         );
@@ -1116,8 +948,8 @@ mod tests {
 
     #[test]
     fn slice_addr() {
-        let m = MmapRegion::new(5).unwrap();
-        let s = m.get_slice(2, 3).unwrap();
+        let m = GuestRegionMmap::new(MmapRegion::new(5).unwrap(), GuestAddress(0)).unwrap();
+        let s = m.get_slice(MemoryRegionAddress(2), 3).unwrap();
         assert_eq!(s.as_ptr(), unsafe { m.as_ptr().offset(2) });
     }
 
@@ -1127,10 +959,11 @@ mod tests {
         let sample_buf = &[1, 2, 3, 4, 5];
         assert!(f.write_all(sample_buf).is_ok());
 
-        let mem_map = MmapRegion::from_file(FileOffset::new(f, 0), sample_buf.len()).unwrap();
+        let region = MmapRegion::from_file(FileOffset::new(f, 0), sample_buf.len()).unwrap();
+        let mem_map = GuestRegionMmap::new(region, GuestAddress(0)).unwrap();
         let buf = &mut [0u8; 16];
         assert_eq!(
-            mem_map.as_volatile_slice().read(buf, 0).unwrap(),
+            mem_map.as_volatile_slice().unwrap().read(buf, 0).unwrap(),
             sample_buf.len()
         );
         assert_eq!(buf[0..sample_buf.len()], sample_buf[..]);
@@ -1147,13 +980,10 @@ mod tests {
         let start_addr2 = GuestAddress(0x800);
         let guest_mem =
             GuestMemoryMmap::from_ranges(&[(start_addr1, 0x400), (start_addr2, 0x400)]).unwrap();
-        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(
-            &[
-                (start_addr1, 0x400, Some(FileOffset::new(f1, 0))),
-                (start_addr2, 0x400, Some(FileOffset::new(f2, 0))),
-            ],
-            false,
-        )
+        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(&[
+            (start_addr1, 0x400, Some(FileOffset::new(f1, 0))),
+            (start_addr2, 0x400, Some(FileOffset::new(f2, 0))),
+        ])
         .unwrap();
 
         let guest_mem_list = vec![guest_mem, guest_mem_backed_by_file];
@@ -1176,13 +1006,10 @@ mod tests {
         let start_addr2 = GuestAddress(0x800);
         let guest_mem =
             GuestMemoryMmap::from_ranges(&[(start_addr1, 0x400), (start_addr2, 0x400)]).unwrap();
-        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(
-            &[
-                (start_addr1, 0x400, Some(FileOffset::new(f1, 0))),
-                (start_addr2, 0x400, Some(FileOffset::new(f2, 0))),
-            ],
-            false,
-        )
+        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(&[
+            (start_addr1, 0x400, Some(FileOffset::new(f1, 0))),
+            (start_addr2, 0x400, Some(FileOffset::new(f2, 0))),
+        ])
         .unwrap();
 
         let guest_mem_list = vec![guest_mem, guest_mem_backed_by_file];
@@ -1211,13 +1038,10 @@ mod tests {
         let start_addr2 = GuestAddress(0x800);
         let guest_mem =
             GuestMemoryMmap::from_ranges(&[(start_addr1, 0x400), (start_addr2, 0x400)]).unwrap();
-        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(
-            &[
-                (start_addr1, 0x400, Some(FileOffset::new(f1, 0))),
-                (start_addr2, 0x400, Some(FileOffset::new(f2, 0))),
-            ],
-            false,
-        )
+        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(&[
+            (start_addr1, 0x400, Some(FileOffset::new(f1, 0))),
+            (start_addr2, 0x400, Some(FileOffset::new(f2, 0))),
+        ])
         .unwrap();
 
         let guest_mem_list = vec![guest_mem, guest_mem_backed_by_file];
@@ -1242,13 +1066,10 @@ mod tests {
         let start_addr2 = GuestAddress(0x800);
         let guest_mem =
             GuestMemoryMmap::from_ranges(&[(start_addr1, 0x400), (start_addr2, 0x400)]).unwrap();
-        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(
-            &[
-                (start_addr1, 0x400, Some(FileOffset::new(f1, 0))),
-                (start_addr2, 0x400, Some(FileOffset::new(f2, 0))),
-            ],
-            false,
-        )
+        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(&[
+            (start_addr1, 0x400, Some(FileOffset::new(f1, 0))),
+            (start_addr2, 0x400, Some(FileOffset::new(f2, 0))),
+        ])
         .unwrap();
 
         let guest_mem_list = vec![guest_mem, guest_mem_backed_by_file];
@@ -1271,10 +1092,11 @@ mod tests {
 
         let start_addr = GuestAddress(0x0);
         let guest_mem = GuestMemoryMmap::from_ranges(&[(start_addr, 0x400)]).unwrap();
-        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(
-            &[(start_addr, 0x400, Some(FileOffset::new(f, 0)))],
-            false,
-        )
+        let guest_mem_backed_by_file = GuestMemoryMmap::from_ranges_with_files(&[(
+            start_addr,
+            0x400,
+            Some(FileOffset::new(f, 0)),
+        )])
         .unwrap();
 
         let guest_mem_list = vec![guest_mem, guest_mem_backed_by_file];
@@ -1285,7 +1107,8 @@ mod tests {
             let slice = guest_mem
                 .find_region(GuestAddress(0))
                 .unwrap()
-                .local_volatile_slice();
+                .as_volatile_slice()
+                .unwrap();
 
             let buf = &mut [0, 0, 0, 0, 0];
             assert_eq!(slice.read(buf, 0).unwrap(), 5);
@@ -1306,18 +1129,12 @@ mod tests {
         let bad_addr2 = GuestAddress(0x1ffc);
         let max_addr = GuestAddress(0x2000);
 
-        let gm = GuestMemoryMmap::from_ranges_with_tracking(&[
-            (start_addr1, 0x1000),
-            (start_addr2, 0x1000),
+        let gm =
+            GuestMemoryMmap::from_ranges(&[(start_addr1, 0x1000), (start_addr2, 0x1000)]).unwrap();
+        let gm_backed_by_file = GuestMemoryMmap::from_ranges_with_files(&[
+            (start_addr1, 0x1000, Some(FileOffset::new(f1, 0))),
+            (start_addr2, 0x1000, Some(FileOffset::new(f2, 0))),
         ])
-        .unwrap();
-        let gm_backed_by_file = GuestMemoryMmap::from_ranges_with_files(
-            &[
-                (start_addr1, 0x1000, Some(FileOffset::new(f1, 0))),
-                (start_addr2, 0x1000, Some(FileOffset::new(f2, 0))),
-            ],
-            true,
-        )
         .unwrap();
 
         let gm_list = vec![gm, gm_backed_by_file];
@@ -1328,10 +1145,6 @@ mod tests {
                 format!("{:?}", gm.write_obj(val1, bad_addr).err().unwrap()),
                 format!("InvalidGuestAddress({:?})", bad_addr,)
             );
-            let _res: guest_memory::Result<()> = gm.with_regions(|_, r| {
-                assert!(!r.dirty_bitmap().unwrap().is_bit_set(0));
-                Ok(())
-            });
             assert_eq!(
                 format!("{:?}", gm.write_obj(val1, bad_addr2).err().unwrap()),
                 format!(
@@ -1340,16 +1153,9 @@ mod tests {
                     max_addr.checked_offset_from(bad_addr2).unwrap()
                 )
             );
-            assert!(!gm.regions[0].dirty_bitmap().unwrap().is_bit_set(0));
-            assert!(gm.regions[1].dirty_bitmap().unwrap().is_bit_set(0));
 
             gm.write_obj(val1, GuestAddress(0x500)).unwrap();
             gm.write_obj(val2, GuestAddress(0x1000 + 32)).unwrap();
-            let _res: guest_memory::Result<()> = gm.with_regions(|_, r| {
-                assert!(r.dirty_bitmap().unwrap().is_bit_set(0));
-                Ok(())
-            });
-
             let num1: u64 = gm.read_obj(GuestAddress(0x500)).unwrap();
             let num2: u64 = gm.read_obj(GuestAddress(0x1000 + 32)).unwrap();
             assert_eq!(val1, num1);
@@ -1363,20 +1169,19 @@ mod tests {
         f.set_len(0x400).unwrap();
 
         let mut start_addr = GuestAddress(0x1000);
-        let gm = GuestMemoryMmap::from_ranges_with_tracking(&[(start_addr, 0x400)]).unwrap();
-        let gm_backed_by_file = GuestMemoryMmap::from_ranges_with_files(
-            &[(start_addr, 0x400, Some(FileOffset::new(f, 0)))],
-            true,
-        )
+        let gm = GuestMemoryMmap::from_ranges(&[(start_addr, 0x400)]).unwrap();
+        let gm_backed_by_file = GuestMemoryMmap::from_ranges_with_files(&[(
+            start_addr,
+            0x400,
+            Some(FileOffset::new(f, 0)),
+        )])
         .unwrap();
 
         let gm_list = vec![gm, gm_backed_by_file];
         for gm in gm_list.iter() {
             let sample_buf = &[1, 2, 3, 4, 5];
 
-            assert!(!gm.regions[0].dirty_bitmap().unwrap().is_bit_set(0));
             assert_eq!(gm.write(sample_buf, start_addr).unwrap(), 5);
-            assert!(gm.regions[0].dirty_bitmap().unwrap().is_bit_set(0));
 
             let buf = &mut [0u8; 5];
             assert_eq!(gm.read(buf, start_addr).unwrap(), 5);
@@ -1384,7 +1189,6 @@ mod tests {
 
             start_addr = GuestAddress(0x13ff);
             assert_eq!(gm.write(sample_buf, start_addr).unwrap(), 1);
-            assert!(gm.regions[0].dirty_bitmap().unwrap().is_bit_set(0));
             assert_eq!(gm.read(buf, start_addr).unwrap(), 1);
             assert_eq!(buf[0], sample_buf[0]);
             start_addr = GuestAddress(0x1000);
@@ -1396,36 +1200,40 @@ mod tests {
         let f = TempFile::new().unwrap().into_file();
         f.set_len(0x400).unwrap();
 
-        let gm =
-            GuestMemoryMmap::from_ranges_with_tracking(&[(GuestAddress(0x1000), 0x400)]).unwrap();
-        let gm_backed_by_file = GuestMemoryMmap::from_ranges_with_files(
-            &[(GuestAddress(0x1000), 0x400, Some(FileOffset::new(f, 0)))],
-            true,
-        )
+        let gm = GuestMemoryMmap::from_ranges(&[(GuestAddress(0x1000), 0x400)]).unwrap();
+        let gm_backed_by_file = GuestMemoryMmap::from_ranges_with_files(&[(
+            GuestAddress(0x1000),
+            0x400,
+            Some(FileOffset::new(f, 0)),
+        )])
         .unwrap();
 
         let gm_list = vec![gm, gm_backed_by_file];
         for gm in gm_list.iter() {
             let addr = GuestAddress(0x1010);
-            let zeros = vec![0; mem::size_of::<u32>()];
-            let mut zero_file = File::open(Path::new("/dev/zero")).unwrap();
-            let mut random_file = File::open(Path::new("/dev/urandom")).unwrap();
+            let mut file = if cfg!(unix) {
+                File::open(Path::new("/dev/zero")).unwrap()
+            } else {
+                File::open(Path::new("c:\\Windows\\system32\\ntoskrnl.exe")).unwrap()
+            };
+            gm.write_obj(!0u32, addr).unwrap();
+            gm.read_exact_from(addr, &mut file, mem::size_of::<u32>())
+                .unwrap();
+            let value: u32 = gm.read_obj(addr).unwrap();
+            if cfg!(unix) {
+                assert_eq!(value, 0);
+            } else {
+                assert_eq!(value, 0x0090_5a4d);
+            }
 
-            assert!(!gm.regions[0].dirty_bitmap().unwrap().is_bit_set(0));
-            gm.read_from(addr, &mut random_file, mem::size_of::<u32>())
+            let mut sink = Vec::new();
+            gm.write_all_to(addr, &mut sink, mem::size_of::<u32>())
                 .unwrap();
-            let mut random_sink = Vec::new();
-            gm.write_all_to(addr, &mut random_sink, mem::size_of::<u32>())
-                .unwrap();
-            assert_ne!(random_sink, zeros);
-            assert!(gm.regions[0].dirty_bitmap().unwrap().is_bit_set(0));
-
-            gm.read_exact_from(addr, &mut zero_file, mem::size_of::<u32>())
-                .unwrap();
-            let mut zero_sink = Vec::new();
-            gm.write_all_to(addr, &mut zero_sink, mem::size_of::<u32>())
-                .unwrap();
-            assert_eq!(zero_sink, zeros);
+            if cfg!(unix) {
+                assert_eq!(sink, vec![0; mem::size_of::<u32>()]);
+            } else {
+                assert_eq!(sink, vec![0x4d, 0x5a, 0x90, 0x00]);
+            };
         }
     }
 
@@ -1438,16 +1246,14 @@ mod tests {
         ];
         let mut iterated_regions = Vec::new();
         let gm = GuestMemoryMmap::from_ranges(&regions).unwrap();
-        let res: guest_memory::Result<()> = gm.with_regions(|_, region| {
+
+        for region in gm.iter() {
             assert_eq!(region.len(), region_size as GuestUsize);
-            Ok(())
-        });
-        assert!(res.is_ok());
-        let res: guest_memory::Result<()> = gm.with_regions_mut(|_, region| {
+        }
+
+        for region in gm.iter() {
             iterated_regions.push((region.start_addr(), region.len() as usize));
-            Ok(())
-        });
-        assert!(res.is_ok());
+        }
         assert_eq!(regions, iterated_regions);
 
         assert!(regions
@@ -1457,39 +1263,6 @@ mod tests {
 
         assert_eq!(gm.regions[0].guest_base, regions[0].0);
         assert_eq!(gm.regions[1].guest_base, regions[1].0);
-    }
-
-    #[test]
-    fn create_vec_with_dirty_tracking() {
-        let region_size = 0x400;
-        let regions = vec![
-            (GuestAddress(0x0), region_size),
-            (GuestAddress(0x1000), region_size),
-        ];
-
-        // dirty page tracking is disabled
-        let gm = GuestMemoryMmap::from_ranges(&regions).unwrap();
-        let res: guest_memory::Result<()> = gm.with_regions(|_, region| {
-            assert!(region.dirty_bitmap().is_none());
-            Ok(())
-        });
-        assert!(res.is_ok());
-
-        // dirty page tracking is enabled
-        let gm = GuestMemoryMmap::from_ranges_with_tracking(&regions).unwrap();
-        let res: guest_memory::Result<()> = gm.with_regions_mut(|_, region| {
-            // this should not fail
-            let bitmap = region.dirty_bitmap().unwrap();
-            assert_eq!(region.len() as usize, region_size);
-            assert_eq!(bitmap.len(), 1);
-
-            let base_addr = region.guest_base.0 as usize;
-            bitmap.set_addr_range(base_addr, 128);
-            assert!(bitmap.is_addr_set(base_addr));
-
-            Ok(())
-        });
-        assert!(res.is_ok());
     }
 
     #[test]
@@ -1503,16 +1276,13 @@ mod tests {
         let gm = Arc::new(GuestMemoryMmap::from_ranges(&regions).unwrap());
         let mem = gm.memory();
 
-        let res: guest_memory::Result<()> = mem.with_regions(|_, region| {
+        for region in mem.iter() {
             assert_eq!(region.len(), region_size as GuestUsize);
-            Ok(())
-        });
-        assert!(res.is_ok());
-        let res: guest_memory::Result<()> = mem.with_regions_mut(|_, region| {
+        }
+
+        for region in mem.iter() {
             iterated_regions.push((region.start_addr(), region.len() as usize));
-            Ok(())
-        });
-        assert!(res.is_ok());
+        }
         assert_eq!(regions, iterated_regions);
 
         assert!(regions
@@ -1535,13 +1305,10 @@ mod tests {
         let start_addr2 = GuestAddress(0x1000);
         let gm =
             GuestMemoryMmap::from_ranges(&[(start_addr1, 0x1000), (start_addr2, 0x1000)]).unwrap();
-        let gm_backed_by_file = GuestMemoryMmap::from_ranges_with_files(
-            &[
-                (start_addr1, 0x1000, Some(FileOffset::new(f1, 0))),
-                (start_addr2, 0x1000, Some(FileOffset::new(f2, 0))),
-            ],
-            false,
-        )
+        let gm_backed_by_file = GuestMemoryMmap::from_ranges_with_files(&[
+            (start_addr1, 0x1000, Some(FileOffset::new(f1, 0))),
+            (start_addr2, 0x1000, Some(FileOffset::new(f2, 0))),
+        ])
         .unwrap();
 
         let gm_list = vec![gm, gm_backed_by_file];
@@ -1565,17 +1332,23 @@ mod tests {
         let region = gm.find_region(start_addr).unwrap();
         assert!(region.file_offset().is_none());
 
-        let gm = GuestMemoryMmap::from_ranges_with_files(
-            &[(start_addr, 0x400, Some(FileOffset::new(f, 0)))],
-            false,
-        )
+        let gm = GuestMemoryMmap::from_ranges_with_files(&[(
+            start_addr,
+            0x400,
+            Some(FileOffset::new(f, 0)),
+        )])
         .unwrap();
         assert!(gm.find_region(start_addr).is_some());
         let region = gm.find_region(start_addr).unwrap();
         assert!(region.file_offset().is_some());
     }
 
+    // Windows needs a dedicated test where it will retrieve the allocation
+    // granularity to determine a proper offset (other than 0) that can be
+    // used for the backing file. Refer to Microsoft docs here:
+    // https://docs.microsoft.com/en-us/windows/desktop/api/memoryapi/nf-memoryapi-mapviewoffile
     #[test]
+    #[cfg(unix)]
     fn test_retrieve_offset_from_fd_backing_memory_region() {
         let f = TempFile::new().unwrap().into_file();
         f.set_len(0x1400).unwrap();
@@ -1588,10 +1361,11 @@ mod tests {
         let region = gm.find_region(start_addr).unwrap();
         assert!(region.file_offset().is_none());
 
-        let gm = GuestMemoryMmap::from_ranges_with_files(
-            &[(start_addr, 0x400, Some(FileOffset::new(f, offset)))],
-            false,
-        )
+        let gm = GuestMemoryMmap::from_ranges_with_files(&[(
+            start_addr,
+            0x400,
+            Some(FileOffset::new(f, offset)),
+        )])
         .unwrap();
         assert!(gm.find_region(start_addr).is_some());
         let region = gm.find_region(start_addr).unwrap();
@@ -1610,17 +1384,21 @@ mod tests {
         let mem_orig = gm.memory();
         assert_eq!(mem_orig.num_regions(), 2);
 
-        let mmap =
-            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0x8000)).unwrap();
+        let mmap = Arc::new(
+            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0x8000)).unwrap(),
+        );
         let gm = gm.insert_region(mmap).unwrap();
-        let mmap =
-            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0x4000)).unwrap();
+        let mmap = Arc::new(
+            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0x4000)).unwrap(),
+        );
         let gm = gm.insert_region(mmap).unwrap();
-        let mmap =
-            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0xc000)).unwrap();
+        let mmap = Arc::new(
+            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0xc000)).unwrap(),
+        );
         let gm = gm.insert_region(mmap).unwrap();
-        let mmap =
-            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0xc000)).unwrap();
+        let mmap = Arc::new(
+            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0xc000)).unwrap(),
+        );
         gm.insert_region(mmap).unwrap_err();
 
         assert_eq!(mem_orig.num_regions(), 2);
@@ -1656,183 +1434,154 @@ mod tests {
     }
 
     #[test]
-    fn test_is_dirty_tracking_enabled() {
-        let region_size = 0x100;
-        let regions = vec![
-            (GuestAddress(0x0), region_size),
-            (GuestAddress(0x100), region_size),
-            (GuestAddress(0x200), region_size),
-            (GuestAddress(0x300), region_size),
-        ];
-
-        // dirty page tracking is disabled
-        let mut gm = new_guest_memory_mmap(&regions[..2]).unwrap();
-        assert_eq!(gm.regions.len(), 2);
-        assert!(!gm.is_dirty_tracking_enabled());
-
-        // dirty page tracking is enabled
-        let mut dirty_tracking_gm = new_guest_memory_mmap_with_tracking(&regions[2..]).unwrap();
-        assert_eq!(dirty_tracking_gm.regions.len(), 2);
-        assert!(dirty_tracking_gm.is_dirty_tracking_enabled());
-
-        // dirty page tracking not enabled for all
-        gm.regions.append(&mut dirty_tracking_gm.regions);
-        assert!(!gm.is_dirty_tracking_enabled());
-    }
-
-    enum AddrOp {
-        Read,
-        Write,
-    }
-
-    fn apply_operation_on_address(addr: *mut u8, op: AddrOp) {
-        let pid = unsafe { libc::fork() };
-        match pid {
-            0 => {
-                match op {
-                    AddrOp::Read => {
-                        let value = unsafe { std::ptr::read(addr) };
-                        // We have to do something with the value, else,
-                        // the Release version will optimize it out, making the test fail
-                        println!("SIGSEGV: {}", value);
-                    }
-                    AddrOp::Write => unsafe {
-                        std::ptr::write(addr, 0xFF);
-                    },
-                }
-                unreachable!();
-            }
-            child_pid => {
-                let mut child_status: i32 = -1;
-                let pid_done = unsafe { libc::waitpid(child_pid, &mut child_status, 0) };
-                assert_eq!(pid_done, child_pid);
-
-                // Asserts that the child process terminated because
-                // it received a signal that was not handled.
-                assert!(libc::WIFSIGNALED(child_status));
-                // Signal code should be a SIGSEGV (11)
-                assert_eq!(libc::WTERMSIG(child_status), 11);
-            }
-        };
-    }
-
-    fn validate_guard_region(region: &MmapRegion) {
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-
-        // Check that the created range allows us to write inside it
-        let addr = region.as_ptr();
-
-        unsafe {
-            std::ptr::write(addr, 0xFF);
-            assert_eq!(std::ptr::read(addr), 0xFF);
-        }
-
-        // Try a read/write operation against the left guard border of the range
-        let left_border = (addr as usize - page_size) as *mut u8;
-        apply_operation_on_address(left_border, AddrOp::Read);
-        apply_operation_on_address(left_border, AddrOp::Write);
-
-        // Try a read/write operation against the right guard border of the range
-        let right_border = (addr as usize + region.size()) as *mut u8;
-        apply_operation_on_address(right_border, AddrOp::Read);
-        apply_operation_on_address(right_border, AddrOp::Write);
-    }
-
-    #[test]
-    fn test_create_guard_region() {
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        let size = page_size * 10;
-        let prot = libc::PROT_READ | libc::PROT_WRITE;
-        let flags = libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_PRIVATE;
-
-        let region = GuestRegionMmap::build_guarded(None, size, prot, flags).unwrap();
-
-        // Verify that the region was built correctly
-        assert_eq!(region.size(), size);
-        assert!(region.file_offset().is_none());
-        assert_eq!(region.prot(), prot);
-        assert_eq!(region.flags(), flags);
-
-        validate_guard_region(&region);
-    }
-
-    #[test]
-    fn test_create_guard_region_from_file() {
-        let file = TempFile::new().unwrap().into_file();
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-
-        let prot = libc::PROT_READ | libc::PROT_WRITE;
-        let flags = libc::MAP_NORESERVE | libc::MAP_PRIVATE;
-        let offset = 0;
-        let size = 10 * page_size;
-        assert_eq!(unsafe { libc::ftruncate(file.as_raw_fd(), 4096 * 10) }, 0);
-
+    fn test_guest_memory_mmap_get_slice() {
+        let region_addr = GuestAddress(0);
+        let region_size = 0x400;
         let region =
-            GuestRegionMmap::build_guarded(Some(FileOffset::new(file, offset)), size, prot, flags)
-                .unwrap();
+            GuestRegionMmap::new(MmapRegion::new(region_size).unwrap(), region_addr).unwrap();
 
-        // Verify that the region was built correctly
-        assert_eq!(region.size(), size);
-        // assert_eq!(region.file_offset().unwrap().start(), offset as u64);
-        assert_eq!(region.prot(), prot);
-        assert_eq!(region.flags(), flags);
+        // Normal case.
+        let slice_addr = MemoryRegionAddress(0x100);
+        let slice_size = 0x200;
+        let slice = region.get_slice(slice_addr, slice_size).unwrap();
+        assert_eq!(slice.len(), slice_size);
 
-        validate_guard_region(&region);
-    }
+        // Empty slice.
+        let slice_addr = MemoryRegionAddress(0x200);
+        let slice_size = 0x0;
+        let slice = region.get_slice(slice_addr, slice_size).unwrap();
+        assert!(slice.is_empty());
 
-    fn loop_guard_region_to_segvfault(region: &MmapRegion) {
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-
-        let pid = unsafe { libc::fork() };
-        match pid {
-            0 => {
-                let mut addr = region.as_ptr() as usize;
-                let right_page_guard = addr + region.size();
-                loop {
-                    unsafe {
-                        std::ptr::write(addr as *mut u8, 0xFF);
-                    }
-
-                    if addr == right_page_guard {
-                        break;
-                    }
-                    addr += page_size;
-                }
-                unsafe {
-                    libc::exit(0);
-                }
-            }
-            child_pid => {
-                let mut child_status: i32 = -1;
-                let pid_done = unsafe { libc::waitpid(child_pid, &mut child_status, 0) };
-                assert_eq!(pid_done, child_pid);
-
-                // Asserts that the child process terminated because
-                // it received a signal that was not handled.
-                assert!(libc::WIFSIGNALED(child_status));
-                // Signal code should be a SIGSEGV (11)
-                assert_eq!(libc::WTERMSIG(child_status), 11);
-            }
-        };
+        // Error case when slice_size is beyond the boundary.
+        let slice_addr = MemoryRegionAddress(0x300);
+        let slice_size = 0x200;
+        assert!(region.get_slice(slice_addr, slice_size).is_err());
     }
 
     #[test]
-    fn test_regions_guarded() {
-        let region_size = 0x10000;
-        let regions = vec![
-            (GuestAddress(0x0), region_size),
-            (GuestAddress(0x10000), region_size),
-            (GuestAddress(0x20000), region_size),
-            (GuestAddress(0x30000), region_size),
-        ];
+    fn test_guest_memory_mmap_as_volatile_slice() {
+        let region_addr = GuestAddress(0);
+        let region_size = 0x400;
+        let region =
+            GuestRegionMmap::new(MmapRegion::new(region_size).unwrap(), region_addr).unwrap();
 
-        let guest_memory = GuestMemoryMmap::from_ranges_guarded(&regions, false).unwrap();
-        guest_memory
-            .with_regions(|_, region| -> Result<(), Error> {
-                validate_guard_region(region);
-                loop_guard_region_to_segvfault(region);
-                Ok(())
-            })
+        // Test slice length.
+        let slice = region.as_volatile_slice().unwrap();
+        assert_eq!(slice.len(), region_size);
+
+        // Test slice data.
+        let v = 0x1234_5678u32;
+        let r = slice.get_ref::<u32>(0x200).unwrap();
+        r.store(v);
+        assert_eq!(r.load(), v);
+    }
+
+    #[test]
+    fn test_guest_memory_get_slice() {
+        let start_addr1 = GuestAddress(0);
+        let start_addr2 = GuestAddress(0x800);
+        let guest_mem =
+            GuestMemoryMmap::from_ranges(&[(start_addr1, 0x400), (start_addr2, 0x400)]).unwrap();
+
+        // Normal cases.
+        let slice_size = 0x200;
+        let slice = guest_mem
+            .get_slice(GuestAddress(0x100), slice_size)
             .unwrap();
+        assert_eq!(slice.len(), slice_size);
+
+        let slice_size = 0x400;
+        let slice = guest_mem
+            .get_slice(GuestAddress(0x800), slice_size)
+            .unwrap();
+        assert_eq!(slice.len(), slice_size);
+
+        // Empty slice.
+        assert!(guest_mem
+            .get_slice(GuestAddress(0x900), 0)
+            .unwrap()
+            .is_empty());
+
+        // Error cases, wrong size or base address.
+        assert!(guest_mem.get_slice(GuestAddress(0), 0x500).is_err());
+        assert!(guest_mem.get_slice(GuestAddress(0x600), 0x100).is_err());
+        assert!(guest_mem.get_slice(GuestAddress(0xc00), 0x100).is_err());
+    }
+
+    #[test]
+    fn test_checked_offset() {
+        let start_addr1 = GuestAddress(0);
+        let start_addr2 = GuestAddress(0x800);
+        let start_addr3 = GuestAddress(0xc00);
+        let guest_mem = GuestMemoryMmap::from_ranges(&[
+            (start_addr1, 0x400),
+            (start_addr2, 0x400),
+            (start_addr3, 0x400),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            guest_mem.checked_offset(start_addr1, 0x200),
+            Some(GuestAddress(0x200))
+        );
+        assert_eq!(
+            guest_mem.checked_offset(start_addr1, 0xa00),
+            Some(GuestAddress(0xa00))
+        );
+        assert_eq!(
+            guest_mem.checked_offset(start_addr2, 0x7ff),
+            Some(GuestAddress(0xfff))
+        );
+        assert_eq!(guest_mem.checked_offset(start_addr2, 0xc00), None);
+        assert_eq!(guest_mem.checked_offset(start_addr1, std::usize::MAX), None);
+
+        assert_eq!(guest_mem.checked_offset(start_addr1, 0x400), None);
+        assert_eq!(
+            guest_mem.checked_offset(start_addr1, 0x400 - 1),
+            Some(GuestAddress(0x400 - 1))
+        );
+    }
+
+    #[test]
+    fn test_check_range() {
+        let start_addr1 = GuestAddress(0);
+        let start_addr2 = GuestAddress(0x800);
+        let start_addr3 = GuestAddress(0xc00);
+        let guest_mem = GuestMemoryMmap::from_ranges(&[
+            (start_addr1, 0x400),
+            (start_addr2, 0x400),
+            (start_addr3, 0x400),
+        ])
+        .unwrap();
+
+        assert_eq!(guest_mem.check_range(start_addr1, 0x0), true);
+        assert_eq!(guest_mem.check_range(start_addr1, 0x200), true);
+        assert_eq!(guest_mem.check_range(start_addr1, 0x400), true);
+        assert_eq!(guest_mem.check_range(start_addr1, 0xa00), false);
+        assert_eq!(guest_mem.check_range(start_addr2, 0x7ff), true);
+        assert_eq!(guest_mem.check_range(start_addr2, 0x800), true);
+        assert_eq!(guest_mem.check_range(start_addr2, 0x801), false);
+        assert_eq!(guest_mem.check_range(start_addr2, 0xc00), false);
+        assert_eq!(guest_mem.check_range(start_addr1, std::usize::MAX), false);
+    }
+
+    #[test]
+    fn test_atomic_accesses() {
+        let region =
+            GuestRegionMmap::new(MmapRegion::new(0x1000).unwrap(), GuestAddress(0)).unwrap();
+
+        crate::bytes::tests::check_atomic_accesses(
+            region,
+            MemoryRegionAddress(0),
+            MemoryRegionAddress(0x1000),
+        );
+    }
+
+    #[test]
+    fn test_dirty_tracking() {
+        test_guest_memory_and_region(|| {
+            crate::GuestMemoryMmap::<AtomicBitmap>::from_ranges(&[(GuestAddress(0), 0x1_0000)])
+                .unwrap()
+        });
     }
 }

@@ -11,8 +11,9 @@ use crate::report_balloon_event_fail;
 use crate::virtio::{
     balloon::device::Balloon, VirtioDevice, DEFLATE_INDEX, INFLATE_INDEX, STATS_INDEX,
 };
+use vm_memory::GuestMemory;
 
-impl Balloon {
+impl<M: GuestMemory + std::marker::Send + 'static> Balloon<M> {
     fn process_activate_event(&self, event_manager: &mut EventManager) {
         debug!("balloon: activate event");
         if let Err(e) = self.activate_evt.read() {
@@ -45,7 +46,7 @@ impl Balloon {
     }
 }
 
-impl Subscriber for Balloon {
+impl<M: GuestMemory + Send + 'static> Subscriber for Balloon<M> {
     fn process(&mut self, event: &EpollEvent, evmgr: &mut EventManager) {
         let source = event.fd();
         let event_set = event.event_set();

@@ -159,9 +159,9 @@ impl Vm {
     }
 
     /// Initializes the guest memory.
-    pub fn memory_init(
+    pub fn memory_init<M: GuestMemory>(
         &mut self,
-        guest_mem: &GuestMemoryMmap,
+        guest_mem: &M,
         kvm_max_memslots: usize,
         track_dirty_pages: bool,
     ) -> Result<()> {
@@ -285,9 +285,9 @@ impl Vm {
         Ok(())
     }
 
-    pub(crate) fn set_kvm_memory_regions(
+    pub(crate) fn set_kvm_memory_regions<M: GuestMemory>(
         &self,
-        guest_mem: &GuestMemoryMmap,
+        guest_mem: &M,
         track_dirty_pages: bool,
     ) -> Result<()> {
         let mut flags = 0u32;

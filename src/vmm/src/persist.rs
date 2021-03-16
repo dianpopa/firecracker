@@ -32,7 +32,8 @@ use seccomp::BpfProgramRef;
 use snapshot::Snapshot;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestMemory, GuestMemoryMmap};
+use vm_memory::bitmap::AtomicBitmap;
 
 const FC_V0_23_SNAP_VERSION: u16 = 1;
 #[cfg(target_arch = "x86_64")]
@@ -193,8 +194,8 @@ impl Display for LoadSnapshotError {
 }
 
 /// Creates a Microvm snapshot.
-pub fn create_snapshot(
-    vmm: &mut Vmm,
+pub fn create_snapshot<M: GuestMemory+ 'static  + Default + Send + Clone>(
+    vmm: &mut Vmm<M>,
     params: &CreateSnapshotParams,
     version_map: VersionMap,
 ) -> std::result::Result<(), CreateSnapshotError> {
@@ -237,8 +238,8 @@ fn snapshot_state_to_file(
     Ok(())
 }
 
-fn snapshot_memory_to_file(
-    vmm: &Vmm,
+fn snapshot_memory_to_file<M: GuestMemory + 'static  + Default + Send + Clone>(
+    vmm: &Vmm<M>,
     mem_file_path: &PathBuf,
     snapshot_type: &SnapshotType,
 ) -> std::result::Result<(), CreateSnapshotError> {
@@ -267,10 +268,10 @@ fn snapshot_memory_to_file(
 }
 
 /// Validate the microVM version and translate it to its corresponding snapshot data format.
-pub fn get_snapshot_data_version(
+pub fn get_snapshot_data_version<M: GuestMemory + 'static  + Default + Send + Clone>(
     version: &Option<String>,
     version_map: &VersionMap,
-    _vmm: &Vmm,
+    _vmm: &Vmm<M>,
 ) -> std::result::Result<u16, CreateSnapshotError> {
     use self::CreateSnapshotError::InvalidVersion;
     if version.is_none() {
@@ -379,12 +380,12 @@ pub fn snapshot_state_sanity_check(
 }
 
 /// Loads a Microvm snapshot producing a 'paused' Microvm.
-pub fn restore_from_snapshot(
+pub fn restore_from_snapshot<M: GuestMemory + 'static  + Default + Send + Clone>(
     event_manager: &mut EventManager,
     seccomp_filter: BpfProgramRef,
     params: &LoadSnapshotParams,
     version_map: VersionMap,
-) -> std::result::Result<Arc<Mutex<Vmm>>, LoadSnapshotError> {
+) -> std::result::Result<Arc<Mutex<Vmm<GuestMemoryMmap<AtomicBitmap>>>>, LoadSnapshotError> {
     use self::LoadSnapshotError::*;
     let track_dirty_pages = params.enable_diff_snapshots;
     let microvm_state = snapshot_state_from_file(&params.snapshot_path, version_map)?;
@@ -424,7 +425,7 @@ fn guest_memory_from_file(
     mem_file_path: &PathBuf,
     mem_state: &GuestMemoryState,
     track_dirty_pages: bool,
-) -> std::result::Result<GuestMemoryMmap, LoadSnapshotError> {
+) -> std::result::Result<GuestMemoryMmap<AtomicBitmap>, LoadSnapshotError> {
     use self::LoadSnapshotError::{DeserializeMemory, MemoryBackingFile};
     let mem_file = File::open(mem_file_path).map_err(MemoryBackingFile)?;
     GuestMemoryMmap::restore(&mem_file, mem_state, track_dirty_pages).map_err(DeserializeMemory)

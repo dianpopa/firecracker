@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use logger::warn;
 use utils::byte_order;
-use vm_memory::{GuestAddress, GuestMemoryMmap};
+use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
 
 use super::device_status;
 use super::*;
@@ -40,8 +40,8 @@ const MMIO_VERSION: u32 = 2;
 /// Typically one page (4096 bytes) of MMIO address space is sufficient to handle this transport
 /// and inner virtio device.
 #[derive(Debug)]
-pub struct MmioTransport {
-    device: Arc<Mutex<dyn VirtioDevice>>,
+pub struct MmioTransport<M: Clone + GuestMemory + Send + 'static> {
+    device: Arc<Mutex<dyn VirtioDevice<M>>>,
     // The register where feature bits are stored.
     pub(crate) features_select: u32,
     // The register where features page is selected.
@@ -49,13 +49,13 @@ pub struct MmioTransport {
     pub(crate) queue_select: u32,
     pub(crate) device_status: u32,
     pub(crate) config_generation: u32,
-    mem: GuestMemoryMmap,
+    mem: M,
     pub(crate) interrupt_status: Arc<AtomicUsize>,
 }
 
-impl MmioTransport {
+impl<M: GuestMemory + Send + Clone> MmioTransport<M> {
     /// Constructs a new MMIO transport for the given virtio device.
-    pub fn new(mem: GuestMemoryMmap, device: Arc<Mutex<dyn VirtioDevice>>) -> MmioTransport {
+    pub fn new(mem: M, device: Arc<Mutex<dyn VirtioDevice<M>>>) -> Self {
         let interrupt_status = device.lock().expect("Poisoned lock").interrupt_status();
 
         MmioTransport {
@@ -70,12 +70,12 @@ impl MmioTransport {
         }
     }
 
-    pub fn locked_device(&self) -> MutexGuard<dyn VirtioDevice + 'static> {
+    pub fn locked_device(&self) -> MutexGuard<dyn VirtioDevice<M> + 'static> {
         self.device.lock().expect("Poisoned lock")
     }
 
     // Gets the encapsulated VirtioDevice.
-    pub fn device(&self) -> Arc<Mutex<dyn VirtioDevice>> {
+    pub fn device(&self) -> Arc<Mutex<dyn VirtioDevice<M>>> {
         self.device.clone()
     }
 
@@ -212,7 +212,7 @@ impl MmioTransport {
     }
 }
 
-impl BusDevice for MmioTransport {
+impl<M: GuestMemory + 'static + Send + Clone> BusDevice for MmioTransport<M> {
     fn read(&mut self, offset: u64, data: &mut [u8]) {
         match offset {
             0x00..=0xff if data.len() == 4 => {

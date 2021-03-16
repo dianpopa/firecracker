@@ -39,6 +39,7 @@ use tests::{
     build_microvm_for_boot, create_snapshot, restore_from_snapshot, MockVmRes as VmResources,
     MockVmm as Vmm,
 };
+use vm_memory::GuestMemory;
 
 /// This enum represents the public interface of the VMM. Each action contains various
 /// bits of information (ids, paths, etc.).
@@ -207,25 +208,25 @@ pub enum VmmData {
 pub type ActionResult = result::Result<VmmData, VmmActionError>;
 
 /// Enables pre-boot setup and instantiation of a Firecracker VMM.
-pub struct PrebootApiController<'a> {
+pub struct PrebootApiController<'a, M: GuestMemory + Send + Default + Clone + 'static> {
     seccomp_filter: BpfProgram,
     instance_info: InstanceInfo,
-    vm_resources: &'a mut VmResources,
+    vm_resources: &'a mut VmResources<M>,
     event_manager: &'a mut EventManager,
-    built_vmm: Option<Arc<Mutex<Vmm>>>,
+    built_vmm: Option<Arc<Mutex<Vmm<M>>>>,
     // Configuring boot specific resources will set this to true.
     // Loading from snapshot will not be allowed once this is true.
     boot_path: bool,
 }
 
-impl<'a> PrebootApiController<'a> {
+impl<'a, M: GuestMemory + Send + Default + 'static + Clone> PrebootApiController<'a, M> {
     /// Constructor for the PrebootApiController.
     pub fn new(
         seccomp_filter: BpfProgram,
         instance_info: InstanceInfo,
-        vm_resources: &'a mut VmResources,
+        vm_resources: &'a mut VmResources<M>,
         event_manager: &'a mut EventManager,
-    ) -> PrebootApiController<'a> {
+    ) -> PrebootApiController<'a, M> {
         PrebootApiController {
             seccomp_filter,
             instance_info,
@@ -248,7 +249,7 @@ impl<'a> PrebootApiController<'a> {
         recv_req: F,
         respond: G,
         boot_timer_enabled: bool,
-    ) -> (VmResources, Arc<Mutex<Vmm>>)
+    ) -> (VmResources<M>, Arc<Mutex<Vmm<M>>>)
     where
         F: Fn() -> VmmAction,
         G: Fn(ActionResult),
@@ -436,12 +437,12 @@ impl<'a> PrebootApiController<'a> {
 }
 
 /// Enables RPC interaction with a running Firecracker VMM.
-pub struct RuntimeApiController {
-    vmm: Arc<Mutex<Vmm>>,
-    vm_resources: VmResources,
+pub struct RuntimeApiController<M: GuestMemory + Send + Default + Clone + 'static> {
+    vmm: Arc<Mutex<Vmm<M>>>,
+    vm_resources: VmResources<M>,
 }
 
-impl RuntimeApiController {
+impl<M: GuestMemory + Send + Default + Clone + 'static> RuntimeApiController<M> {
     /// Handles the incoming runtime `VmmAction` request and provides a response for it.
     pub fn handle_request(&mut self, request: VmmAction) -> ActionResult {
         use self::VmmAction::*;
@@ -503,7 +504,7 @@ impl RuntimeApiController {
     }
 
     /// Creates a new `RuntimeApiController`.
-    pub fn new(vm_resources: VmResources, vmm: Arc<Mutex<Vmm>>) -> Self {
+    pub fn new(vm_resources: VmResources<M>, vmm: Arc<Mutex<Vmm<M>>>) -> Self {
         Self { vm_resources, vmm }
     }
 

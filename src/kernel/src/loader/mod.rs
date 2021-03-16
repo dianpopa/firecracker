@@ -76,8 +76,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// Returns the entry address of the kernel.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn load_kernel<F>(
-    guest_mem: &GuestMemoryMmap,
+pub fn load_kernel<F, M: GuestMemory>(
+    guest_mem: &M,
     kernel_image: &mut F,
     start_address: u64,
 ) -> Result<GuestAddress>
@@ -151,8 +151,8 @@ where
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn load_kernel<F>(
-    guest_mem: &GuestMemoryMmap,
+pub fn load_kernel<F, M: GuestMemory>(
+    guest_mem: &M,
     kernel_image: &mut F,
     start_address: u64,
 ) -> Result<GuestAddress>
@@ -237,8 +237,8 @@ where
 /// * `guest_mem` - A u8 slice that will be partially overwritten by the command line.
 /// * `guest_addr` - The address in `guest_mem` at which to load the command line.
 /// * `cmdline` - The kernel command line as CString.
-pub fn load_cmdline(
-    guest_mem: &GuestMemoryMmap,
+pub fn load_cmdline<M: GuestMemory>(
+    guest_mem: &M,
     guest_addr: GuestAddress,
     cmdline: &CString,
 ) -> std::result::Result<(), CmdlineError> {

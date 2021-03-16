@@ -9,8 +9,9 @@ use utils::epoll::{EpollEvent, EventSet};
 
 use crate::virtio::net::device::Net;
 use crate::virtio::{VirtioDevice, RX_INDEX, TX_INDEX};
+use vm_memory::GuestMemory;
 
-impl Net {
+impl<M: GuestMemory + Send + 'static> Net<M> {
     fn process_activate_event(&self, event_manager: &mut EventManager) {
         debug!("net: activate event");
         if let Err(e) = self.activate_evt.read() {
@@ -43,7 +44,7 @@ impl Net {
     }
 }
 
-impl Subscriber for Net {
+impl<M: GuestMemory + Send + 'static> Subscriber for Net<M> {
     fn process(&mut self, event: &EpollEvent, evmgr: &mut EventManager) {
         let source = event.fd();
         let event_set = event.event_set();

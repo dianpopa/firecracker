@@ -15,10 +15,11 @@ use crate::vmm_config::boot_source::BootSourceConfig;
 use polly::event_manager::EventManager;
 use seccomp::SeccompLevel;
 use utils::terminal::Terminal;
+use vm_memory::GuestMemory;
 
 const VMM_ERR_EXIT: i32 = 42;
 
-pub fn create_vmm(_kernel_image: Option<&str>, is_diff: bool) -> (Arc<Mutex<Vmm>>, EventManager) {
+pub fn create_vmm<M: GuestMemory + Default + Send + Clone>(_kernel_image: Option<&str>, is_diff: bool) -> (Arc<Mutex<Vmm<M>>>, EventManager) {
     let mut event_manager = EventManager::new().unwrap();
     let empty_seccomp_filter = get_seccomp_filter(SeccompLevel::None).unwrap();
 
@@ -31,7 +32,7 @@ pub fn create_vmm(_kernel_image: Option<&str>, is_diff: bool) -> (Arc<Mutex<Vmm>
         None => boot_source_cfg.into(),
     };
     let mock_vm_res = MockVmResources::new().with_boot_source(boot_source_cfg);
-    let resources: VmResources = if is_diff {
+    let resources: VmResources<M> = if is_diff {
         mock_vm_res
             .with_vm_config(MockVmConfig::new().with_dirty_page_tracking().into())
             .into()
@@ -45,12 +46,12 @@ pub fn create_vmm(_kernel_image: Option<&str>, is_diff: bool) -> (Arc<Mutex<Vmm>
     )
 }
 
-pub fn default_vmm(kernel_image: Option<&str>) -> (Arc<Mutex<Vmm>>, EventManager) {
+pub fn default_vmm<M: GuestMemory + Send + Clone + Default> (kernel_image: Option<&str>) -> (Arc<Mutex<Vmm<M>>>, EventManager) {
     create_vmm(kernel_image, false)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn dirty_tracking_vmm(kernel_image: Option<&str>) -> (Arc<Mutex<Vmm>>, EventManager) {
+pub fn dirty_tracking_vmm<M: GuestMemory + Default + Send + Clone>(kernel_image: Option<&str>) -> (Arc<Mutex<Vmm<M>>>, EventManager) {
     create_vmm(kernel_image, true)
 }
 

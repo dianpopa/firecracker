@@ -270,13 +270,13 @@ fn print_supported_snapshot_versions() {
 }
 
 // Configure and start a microVM as described by the command-line JSON.
-fn build_microvm_from_json(
+fn build_microvm_from_json<M: GuestMemory>(
     seccomp_filter: BpfProgram,
     event_manager: &mut EventManager,
     config_json: String,
     instance_info: &InstanceInfo,
     boot_timer_enabled: bool,
-) -> (VmResources, Arc<Mutex<vmm::Vmm>>) {
+) -> (VmResources<M>, Arc<Mutex<vmm::Vmm<M>>>) {
     let mut vm_resources =
         VmResources::from_json(&config_json, instance_info).unwrap_or_else(|err| {
             error!(

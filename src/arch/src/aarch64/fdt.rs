@@ -91,8 +91,12 @@ pub enum Error {
 type Result<T> = result::Result<T, Error>;
 
 /// Creates the flattened device tree for this aarch64 microVM.
-pub fn create_fdt<T: DeviceInfoForFDT + Clone + Debug, S: std::hash::BuildHasher>(
-    guest_mem: &GuestMemoryMmap,
+pub fn create_fdt<
+    T: DeviceInfoForFDT + Clone + Debug,
+    S: std::hash::BuildHasher,
+    M: GuestMemory,
+>(
+    guest_mem: &M,
     vcpu_mpidr: Vec<u64>,
     cmdline: &CStr,
     device_info: &HashMap<(DeviceType, String), T, S>,
@@ -434,7 +438,7 @@ fn create_cpu_nodes(fdt: &mut Vec<u8>, vcpu_mpidr: &[u64]) -> Result<()> {
     Ok(())
 }
 
-fn create_memory_node(fdt: &mut Vec<u8>, guest_mem: &GuestMemoryMmap) -> Result<()> {
+fn create_memory_node<M: GuestMemory>(fdt: &mut Vec<u8>, guest_mem: &M) -> Result<()> {
     let mem_size = guest_mem.last_addr().raw_value() - super::layout::DRAM_MEM_START + 1;
     // See https://github.com/torvalds/linux/blob/master/Documentation/devicetree/booting-without-of.txt#L960
     // for an explanation of this.

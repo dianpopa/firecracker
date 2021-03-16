@@ -8,9 +8,10 @@ use polly::event_manager::{EventManager, Subscriber};
 use rate_limiter::RateLimiter;
 use utils::epoll::{EpollEvent, EventSet};
 use utils::tempfile::TempFile;
+use vm_memory::GuestMemory;
 
 /// Create a default Block instance to be used in tests.
-pub fn default_block() -> Block {
+pub fn default_block<M: GuestMemory + Send + 'static>() -> Block<M> {
     // Create backing file.
     let f = TempFile::new().unwrap();
     f.as_file().set_len(0x1000).unwrap();
@@ -19,7 +20,7 @@ pub fn default_block() -> Block {
 }
 
 /// Create a default Block instance using file at the specified path to be used in tests.
-pub fn default_block_with_path(path: String) -> Block {
+pub fn default_block_with_path<M: GuestMemory + Send + 'static>(path: String) -> Block<M> {
     // Rate limiting is enabled but with a high operation rate (10 million ops/s).
     let rate_limiter = RateLimiter::new(0, 0, 0, 100_000, 0, 10).unwrap();
 
@@ -37,7 +38,7 @@ pub fn default_block_with_path(path: String) -> Block {
     .unwrap()
 }
 
-pub fn invoke_handler_for_queue_event(b: &mut Block) {
+pub fn invoke_handler_for_queue_event<M: GuestMemory + Send + 'static>(b: &mut Block<M>) {
     // Trigger the queue event.
     b.queue_evts[0].write(1).unwrap();
     // Handle event.
@@ -49,14 +50,14 @@ pub fn invoke_handler_for_queue_event(b: &mut Block) {
     assert_eq!(b.interrupt_evt.read().unwrap(), 1);
 }
 
-pub fn set_queue(blk: &mut Block, idx: usize, q: Queue) {
+pub fn set_queue<M: GuestMemory + Send>(blk: &mut Block<M>, idx: usize, q: Queue) {
     blk.queues[idx] = q;
 }
 
-pub fn set_rate_limiter(blk: &mut Block, rl: RateLimiter) {
+pub fn set_rate_limiter<M: GuestMemory + Send>(blk: &mut Block<M>, rl: RateLimiter) {
     blk.rate_limiter = rl;
 }
 
-pub fn rate_limiter(blk: &mut Block) -> &RateLimiter {
+pub fn rate_limiter<M: GuestMemory + Send>(blk: &mut Block<M>) -> &RateLimiter {
     &blk.rate_limiter
 }

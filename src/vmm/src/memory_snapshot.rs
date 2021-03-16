@@ -10,8 +10,8 @@ use std::io::SeekFrom;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 use vm_memory::{
-    Bytes, FileOffset, GuestAddress, GuestMemory, GuestMemoryError, GuestMemoryMmap,
-    GuestMemoryRegion, GuestRegionMmap, MemoryRegionAddress,
+    bitmap::AtomicBitmap, Bytes, FileOffset, GuestAddress, GuestMemory, GuestMemoryError,
+    GuestMemoryMmap, GuestMemoryRegion, GuestRegionMmap, MemoryRegionAddress,
 };
 
 use crate::DirtyBitmap;
@@ -89,7 +89,7 @@ impl Display for Error {
     }
 }
 
-impl SnapshotMemory for GuestMemoryMmap {
+impl SnapshotMemory for GuestMemoryMmap<AtomicBitmap> {
     /// Describes GuestMemoryMmap through a GuestMemoryState struct.
     fn describe(&self) -> GuestMemoryState {
         let mut guest_memory_state = GuestMemoryState::default();

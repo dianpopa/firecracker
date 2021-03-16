@@ -12,7 +12,7 @@ use crate::virtio::{
 };
 use utils::epoll::{EpollEvent, EventSet};
 use utils::eventfd::EventFd;
-use vm_memory::{GuestAddress, GuestMemoryMmap};
+use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
 
 type Result<T> = std::result::Result<T, VsockError>;
 
@@ -106,9 +106,9 @@ impl VsockBackend for TestBackend {}
 
 pub struct TestContext {
     pub cid: u64,
-    pub mem: GuestMemoryMmap,
+    pub mem: GuestMemoryMmap<()>,
     pub mem_size: usize,
-    pub device: Vsock<TestBackend>,
+    pub device: Vsock<TestBackend, GuestMemoryMmap<()>>,
 }
 
 impl TestContext {
@@ -169,14 +169,14 @@ impl Default for TestContext {
 }
 
 pub struct EventHandlerContext<'a> {
-    pub device: Vsock<TestBackend>,
-    pub guest_rxvq: GuestQ<'a>,
-    pub guest_txvq: GuestQ<'a>,
-    pub guest_evvq: GuestQ<'a>,
+    pub device: Vsock<TestBackend, GuestMemoryMmap<()>>,
+    pub guest_rxvq: GuestQ<'a, GuestMemoryMmap<()>>,
+    pub guest_txvq: GuestQ<'a, GuestMemoryMmap<()>>,
+    pub guest_evvq: GuestQ<'a, GuestMemoryMmap<()>>,
 }
 
 impl<'a> EventHandlerContext<'a> {
-    pub fn mock_activate(&mut self, mem: GuestMemoryMmap) {
+    pub fn mock_activate(&mut self, mem: GuestMemoryMmap<()>) {
         // Artificially activate the device.
         self.device.activate(mem).unwrap();
     }
@@ -193,18 +193,19 @@ impl<'a> EventHandlerContext<'a> {
     }
 }
 
-impl<B> Vsock<B>
+impl<B, M: GuestMemory> Vsock<B, M>
 where
     B: VsockBackend,
+    M: Send,
 {
-    pub fn write_element_in_queue(vsock: &Vsock<B>, idx: usize, val: u64) {
+    pub fn write_element_in_queue(vsock: &Vsock<B, M>, idx: usize, val: u64) {
         if idx > vsock.queue_events.len() - 1 {
             panic!("Index bigger than the number of queues of this device");
         }
         vsock.queue_events[idx].write(val).unwrap();
     }
 
-    pub fn get_element_from_interest_list(vsock: &Vsock<B>, idx: usize) -> u64 {
+    pub fn get_element_from_interest_list(vsock: &Vsock<B, M>, idx: usize) -> u64 {
         match idx {
             0..=2 => vsock.queue_events[idx].as_raw_fd() as u64,
             3 => vsock.backend.as_raw_fd() as u64,

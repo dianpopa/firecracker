@@ -40,8 +40,8 @@ impl ApiServerAdapter {
         api_event_fd: EventFd,
         from_api: Receiver<ApiRequest>,
         to_api: Sender<ApiResponse>,
-        vm_resources: VmResources,
-        vmm: Arc<Mutex<Vmm>>,
+        vm_resources: VmResources<M>,
+        vmm: Arc<Mutex<Vmm<GuestMemoryMmap<AtomicBitmap>>>>,
         event_manager: &mut EventManager,
     ) {
         let api_adapter = Arc::new(Mutex::new(Self {

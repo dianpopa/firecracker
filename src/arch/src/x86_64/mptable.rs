@@ -130,7 +130,7 @@ fn compute_mp_size(num_cpus: u8) -> usize {
 }
 
 /// Performs setup of the MP table for the given `num_cpus`.
-pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8) -> Result<()> {
+pub fn setup_mptable<M: GuestMemory>(mem: &M, num_cpus: u8) -> Result<()> {
     if u32::from(num_cpus) > MAX_SUPPORTED_CPUS {
         return Err(Error::TooManyCpus);
     }
