@@ -5,15 +5,39 @@ mod dist_regs;
 mod icc_regs;
 mod redist_regs;
 
-use kvm_ioctls::DeviceFd;
-
 use crate::aarch64::gic::{
-    regs::{GicState, GicVcpuState},
-    Error, Result,
+    regs::GicRegState,
+    Error,
+    Result,
 };
+use kvm_ioctls::DeviceFd;
+use versionize::{VersionMap, Versionize, VersionizeResult};
+use versionize_derive::Versionize;
+
+/// Structure for serializing the state of the Vgic ICC regs
+#[derive(Debug, Default, Versionize)]
+pub struct VgicSysRegsState {
+    pub main_icc_regs: Vec<GicRegState<u64>>,
+    pub ap_icc_regs: Vec<Option<GicRegState<u64>>>,
+}
+
+/// Structure used for serializing the state of the GIC registers for a specific vCPU
+#[derive(Debug, Default, Versionize)]
+pub struct GicVcpuState {
+    pub rdist: Vec<GicRegState<u32>>,
+    pub icc: VgicSysRegsState,
+}
+
+#[derive(Debug, Default, Versionize)]
+pub struct Gicv3State {
+    /// Temp doc
+    pub dist: Vec<GicRegState<u32>>,
+    /// Temp doc
+    pub gic_vcpu_states: Vec<GicVcpuState>,
+}
 
 /// Save the state of the GIC device.
-pub fn save_state(fd: &DeviceFd, mpidrs: &[u64]) -> Result<GicState> {
+pub fn save_state(fd: &DeviceFd, mpidrs: &[u64]) -> Result<Gicv3State> {
     // Flush redistributors pending tables to guest RAM.
     super::save_pending_tables(fd)?;
 
@@ -25,14 +49,14 @@ pub fn save_state(fd: &DeviceFd, mpidrs: &[u64]) -> Result<GicState> {
         })
     }
 
-    Ok(GicState {
+    Ok(Gicv3State {
         dist: dist_regs::get_dist_regs(fd)?,
         gic_vcpu_states: vcpu_states,
     })
 }
 
 /// Restore the state of the GIC device.
-pub fn restore_state(fd: &DeviceFd, mpidrs: &[u64], state: &GicState) -> Result<()> {
+pub fn restore_state(fd: &DeviceFd, mpidrs: &[u64], state: &Gicv3State) -> Result<()> {
     dist_regs::set_dist_regs(fd, &state.dist)?;
 
     if mpidrs.len() != state.gic_vcpu_states.len() {

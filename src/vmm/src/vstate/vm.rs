@@ -13,7 +13,7 @@ use std::{
 #[cfg(target_arch = "aarch64")]
 use arch::aarch64::gic::GICDevice;
 #[cfg(target_arch = "aarch64")]
-use arch::aarch64::gic::GicState;
+use arch::aarch64::gic::GicStateEnum;
 #[cfg(target_arch = "x86_64")]
 use kvm_bindings::{
     kvm_clock_data, kvm_irqchip, kvm_pit_config, kvm_pit_state2, CpuId, MsrList,
@@ -269,18 +269,24 @@ impl Vm {
 
     #[cfg(target_arch = "aarch64")]
     pub fn save_state(&self, mpidrs: &[u64]) -> Result<VmState> {
+        // Ok(VmState {
+        //     gic: self
+        //         .get_irqchip()
+        //         .save_device(mpidrs)
+        //         .map_err(Error::SaveGic)?,
+        // })
         Ok(VmState {
-            gic: self
-                .get_irqchip()
-                .save_device(mpidrs)
+            gic: arch::aarch64::gic::save_gic(self.get_irqchip(), mpidrs)
                 .map_err(Error::SaveGic)?,
         })
     }
 
     #[cfg(target_arch = "aarch64")]
     pub fn restore_state(&self, mpidrs: &[u64], state: &VmState) -> Result<()> {
-        self.get_irqchip()
-            .restore_device(mpidrs, &state.gic)
+        // self.get_irqchip()
+        //     .restore_device(mpidrs, &state.gic)
+        //     .map_err(Error::RestoreGic)
+        arch::aarch64::gic::restore_gic(self.get_irqchip(), mpidrs, &state.gic)
             .map_err(Error::RestoreGic)
     }
 
@@ -330,7 +336,7 @@ pub struct VmState {
 #[cfg(target_arch = "aarch64")]
 #[derive(Default, Versionize)]
 pub struct VmState {
-    gic: GicState,
+    gic: GicStateEnum,
 }
 
 #[cfg(test)]

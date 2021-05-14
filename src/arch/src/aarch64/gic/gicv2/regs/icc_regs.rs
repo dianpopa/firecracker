@@ -4,8 +4,9 @@
 use kvm_bindings::*;
 use kvm_ioctls::DeviceFd;
 
+use super::VgicSysRegsState;
 use crate::aarch64::gic::{
-    regs::{SimpleReg, VgicRegEngine, VgicSysRegsState},
+    regs::{SimpleReg, VgicRegEngine},
     Result,
 };
 

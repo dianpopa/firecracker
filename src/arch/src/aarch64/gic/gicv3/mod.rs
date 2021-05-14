@@ -7,9 +7,10 @@ use std::{boxed::Box, result};
 
 use kvm_ioctls::DeviceFd;
 
-use crate::aarch64::gic::{Error, GICDevice, GicState};
+use crate::aarch64::gic::{Error, GICDevice};
 
 type Result<T> = result::Result<T, Error>;
+pub use regs::Gicv3State;
 
 pub(crate) struct GICv3 {
     /// The file descriptor for the KVM device
@@ -51,6 +52,14 @@ impl GICv3 {
     fn get_redists_size(vcpu_count: u64) -> u64 {
         vcpu_count * GICv3::KVM_VGIC_V3_REDIST_SIZE
     }
+
+    pub fn save(fd: &DeviceFd, mpidrs: &[u64]) -> Result<Gicv3State> {
+        regs::save_state(fd, mpidrs)
+    }
+
+    pub fn restore(fd: &DeviceFd, mpidrs: &[u64], state: &Gicv3State) -> Result<()> {
+        regs::restore_state(&fd, mpidrs, state)
+    }
 }
 
 impl GICDevice for GICv3 {
@@ -89,14 +98,6 @@ impl GICDevice for GICv3 {
             ],
             vcpu_count,
         })
-    }
-
-    fn save_device(&self, mpidrs: &[u64]) -> Result<GicState> {
-        regs::save_state(&self.fd, mpidrs)
-    }
-
-    fn restore_device(&self, mpidrs: &[u64], state: &GicState) -> Result<()> {
-        regs::restore_state(&self.fd, mpidrs, state)
     }
 
     fn init_device_attributes(gic_device: &dyn GICDevice) -> Result<()> {

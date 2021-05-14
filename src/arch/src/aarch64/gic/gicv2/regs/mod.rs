@@ -4,31 +4,54 @@
 mod dist_regs;
 mod icc_regs;
 
-use kvm_ioctls::DeviceFd;
-
 use crate::aarch64::gic::{
-    regs::{GicState, GicVcpuState},
-    Error, Result,
+    regs::GicRegState,
+    Error,
+    Result,
 };
+use kvm_ioctls::DeviceFd;
+use versionize::{VersionMap, Versionize, VersionizeResult};
+use versionize_derive::Versionize;
+
+/// Structure for serializing the state of the Vgic ICC regs
+#[derive(Debug, Default, Versionize)]
+pub struct VgicSysRegsState {
+    pub main_icc_regs: Vec<GicRegState<u64>>,
+    pub ap_icc_regs: Vec<Option<GicRegState<u64>>>,
+}
+
+/// Structure used for serializing the state of the GIC registers for a specific vCPU
+#[derive(Debug, Default, Versionize)]
+pub struct GicVcpuState {
+    pub icc: VgicSysRegsState,
+}
+
+/// Structure used for serializing the state of the GIC registers
+#[derive(Debug, Default, Versionize)]
+pub struct Gicv2State {
+    /// Temp doc
+    pub dist: Vec<GicRegState<u32>>,
+    /// Temp doc
+    pub gic_vcpu_states: Vec<GicVcpuState>,
+}
 
 /// Save the state of the GIC device.
-pub fn save_state(fd: &DeviceFd, mpidrs: &[u64]) -> Result<GicState> {
+pub fn save_state(fd: &DeviceFd, mpidrs: &[u64]) -> Result<Gicv2State> {
     let mut vcpu_states = Vec::with_capacity(mpidrs.len());
     for mpidr in mpidrs {
         vcpu_states.push(GicVcpuState {
-            rdist: Vec::new(),
             icc: icc_regs::get_icc_regs(fd, *mpidr)?,
         })
     }
 
-    Ok(GicState {
+    Ok(Gicv2State {
         dist: dist_regs::get_dist_regs(fd)?,
         gic_vcpu_states: vcpu_states,
     })
 }
 
 /// Restore the state of the GIC device.
-pub fn restore_state(fd: &DeviceFd, mpidrs: &[u64], state: &GicState) -> Result<()> {
+pub fn restore_state(fd: &DeviceFd, mpidrs: &[u64], state: &Gicv2State) -> Result<()> {
     dist_regs::set_dist_regs(fd, &state.dist)?;
 
     if mpidrs.len() != state.gic_vcpu_states.len() {

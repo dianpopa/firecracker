@@ -13,7 +13,8 @@ use super::layout;
 use gicv2::GICv2;
 use gicv3::GICv3;
 
-pub use regs::GicState;
+use versionize::{VersionMap, Versionize, VersionizeResult,VersionizeError};
+use versionize_derive::Versionize;
 
 /// Errors thrown while setting up the GIC.
 #[derive(Debug)]
@@ -141,12 +142,6 @@ pub trait GICDevice {
         Ok(())
     }
 
-    /// Method to save the state of the GIC device.
-    fn save_device(&self, mpidrs: &[u64]) -> Result<GicState>;
-
-    /// Method to restore the state of the GIC device.
-    fn restore_device(&self, mpidrs: &[u64], state: &GicState) -> Result<()>;
-
     /// Method to initialize the GIC device
     fn new(vm: &VmFd, vcpu_count: u64) -> Result<Box<dyn GICDevice>>
     where
@@ -165,7 +160,6 @@ pub trait GICDevice {
 }
 
 /// Create a GIC device.
-
 /// If "version" parameter is "None" the function will try to create by default a GICv3 device.
 /// If that fails it will try to fall-back to a GICv2 device.
 /// If version is Some the function will try to create a device of exactly the specified version.
@@ -180,6 +174,39 @@ pub fn create_gic(
         None => GICv3::new(vm, vcpu_count).or_else(|_| GICv2::new(vm, vcpu_count)),
     }
 }
+
+#[derive(Debug, Versionize)]
+/// Temp doc
+pub enum GicStateEnum {
+    /// Temp doc
+    GicV3State(gicv3::Gicv3State),
+    /// Temp doc
+    GicV2State(gicv2::Gicv2State)
+}
+
+/// Create a GICv3 or GICv2 device.
+pub fn save_gic(dev: &dyn GICDevice, mpidrs: &[u64]) -> Result<GicStateEnum> {
+    match dev.fdt_compatibility() {
+        "arm,gic-v3" => Ok(GicStateEnum::GicV3State(GICv3::save(dev.device_fd(), mpidrs)?)),
+        "arm,gic-400" => Ok(GicStateEnum::GicV2State(GICv2::save(dev.device_fd(), mpidrs)?)),
+        _ => Err(Error::InconsistentVcpuCount),
+    }
+}
+
+/// Restore a GICv3 or GICv2 device.
+pub fn restore_gic(dev: &dyn GICDevice, mpidrs: &[u64], state: &GicStateEnum) -> Result<()> {
+    match state {
+        GicStateEnum::GicV3State(ref state) => GICv3::restore(dev.device_fd(), mpidrs, state),
+        GicStateEnum::GicV2State(ref state) => GICv2::restore(dev.device_fd(), mpidrs, state),
+    }
+}
+
+impl Default for GicStateEnum {
+    fn default() -> GicStateEnum {
+        GicStateEnum::GicV3State {
+            0: Default::default()
+        } }
+    }
 
 #[cfg(test)]
 mod tests {
