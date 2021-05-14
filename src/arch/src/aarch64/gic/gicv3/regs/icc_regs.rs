@@ -4,7 +4,10 @@
 use kvm_bindings::*;
 use kvm_ioctls::DeviceFd;
 
-use crate::aarch64::gic::regs::{SimpleReg, VgicRegEngine, VgicSysRegsState};
+//use crate::aarch64::gic::regs::{SimpleReg, VgicRegEngine, VgicSysRegsState};
+use crate::aarch64::gic::regs::{SimpleReg, VgicRegEngine};
+
+use super::VgicSysRegsState;
 use crate::aarch64::gic::{Error, Result};
 
 const ICC_CTLR_EL1_PRIBITS_SHIFT: u64 = 8;

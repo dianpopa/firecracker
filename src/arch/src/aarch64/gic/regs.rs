@@ -17,28 +17,32 @@ pub struct GicRegState<T: Versionize> {
     pub(crate) chunks: Vec<T>,
 }
 
-/// Structure for serializing the state of the Vgic ICC regs
-#[derive(Debug, Default, Versionize)]
-pub struct VgicSysRegsState {
-    pub main_icc_regs: Vec<GicRegState<u64>>,
-    pub ap_icc_regs: Vec<Option<GicRegState<u64>>>,
+// /// Structure for serializing the state of the Vgic ICC regs
+// #[derive(Debug, Default, Versionize)]
+// pub struct VgicSysRegsState {
+//     pub main_icc_regs: Vec<GicRegState<u64>>,
+//     pub ap_icc_regs: Vec<Option<GicRegState<u64>>>,
+// }
+
+pub trait GicVcpuS: Debug + Versionize {
+    fn restore(&self, fd: &DeviceFd, mpidrs: u64) -> Result<()>;
 }
 
-/// Structure used for serializing the state of the GIC registers.
+/// Structure used for serializing the state of the GIC registers
 #[derive(Debug, Default, Versionize)]
 pub struct GicState {
-    /// The state of the distributor registers.
+    /// Temp doc
     pub dist: Vec<GicRegState<u32>>,
-    /// The state of the vcpu interfaces.
-    pub gic_vcpu_states: Vec<GicVcpuState>,
+    /// Temp doc
+    pub gic_vcpu_states: Vec<Box<dyn GicVcpuS>>,
 }
 
-/// Structure used for serializing the state of the GIC registers for a specific vCPU.
-#[derive(Debug, Default, Versionize)]
-pub struct GicVcpuState {
-    pub rdist: Vec<GicRegState<u32>>,
-    pub icc: VgicSysRegsState,
-}
+// /// Structure used for serializing the state of the GIC registers for a specific vCPU
+// #[derive(Debug, Default, Versionize)]
+// pub struct GicVcpuState {
+//     pub rdist: Vec<GicRegState<u32>>,
+//     pub icc: VgicSysRegsState,
+// }
 
 impl<T: Versionize> Versionize for GicRegState<T> {
     fn serialize<W: std::io::Write>(
