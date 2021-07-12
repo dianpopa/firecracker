@@ -1448,6 +1448,9 @@ cmd_install() {
     install -m 755 "$CARGO_SECCOMPILER_TARGET_DIR/$target/$profile/seccompiler-bin" "$install_path"
 }
 
+# `./devtool build_kernel -c ../../resources/microvm-kernel-arm64.config -n 8`
+# Build a kernel using the provided config file.
+#
 cmd_build_kernel() {
     nprocs=2
 
