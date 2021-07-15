@@ -54,6 +54,7 @@ RUN apt-get update \
         zlib1g-dev \
         screen \
         tzdata \
+        debootstrap \
     && python3 -m pip install \
         setuptools \
         setuptools_rust \

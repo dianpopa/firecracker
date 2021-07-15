@@ -54,6 +54,7 @@ RUN apt-get update \
         screen \
         tzdata \
         npm \
+        debootstrap \
     && python3 -m pip install \
         setuptools \
         wheel \
