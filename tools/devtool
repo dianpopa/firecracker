@@ -520,6 +520,17 @@ update_python_package_version() {
     docker rm -f "$dummy_container_name"
 }
 
+create_dir() {
+    # Create a dir for the provided path.
+    dir="$1"
+    mkdir -p  "$dir" || die "Error: cannot create dir $dir"
+        [ -x "$dir" ] && [ -w "$dir" ] || \
+            {
+                chmod +x+w "$dir"
+            } || \
+            die "Error: wrong permissions for $dir. Should be +x+w"
+}
+
 # `$0 help`
 # Show the detailed devtool usage information.
 #
