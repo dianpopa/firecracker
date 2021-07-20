@@ -72,7 +72,7 @@
 DEVCTR_IMAGE_NO_TAG="public.ecr.aws/firecracker/fcuvm"
 
 # Development container tag
-DEVCTR_IMAGE_TAG="v30"
+DEVCTR_IMAGE_TAG="latest"
 
 # Development container image (name:tag)
 # This should be updated whenever we upgrade the development container.
@@ -549,6 +549,11 @@ cmd_help() {
     echo "    build_devctr [--no-python-package-update]"
     echo "        Builds the development container from its Dockerfile."
     echo "        -n, --no-python-package-update  Do not update python packages."
+    echo ""
+    echo "    build_rootfs -c|--config [-n|--nproc]"
+    echo "        Builds a rootfs image tailored for use in our CI."
+    echo "        -s, --size      Size of the rootfs image. Defaults to 1G."
+    echo "        -p, --partuuid  Whether to build a partuuid image."
     echo ""
     echo "    checkenv"
     echo "        Performs prerequisites checks needed to execute firecracker."
@@ -1440,6 +1445,78 @@ cmd_install() {
 
     say "Installing seccomp in $install_path"
     install -m 755 "$CARGO_SECCOMPILER_TARGET_DIR/$target/$profile/seccompiler-bin" "$install_path"
+}
+
+# `./devtool build_rootfs -s 500M`
+# Build a kernel using the provided config file.
+#
+cmd_build_rootfs() {
+    # Default size for the resulting rootfs image is 1G.
+    SIZE="1000M"
+
+    # Parse the command line args.
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            "-h"|"--help")      { cmd_help; exit 1; } ;;
+            "-s"|"--size")
+                shift
+                SIZE="$1"
+                ;;
+            "-p"|"--partuuid")
+                shift
+                PARTUUID=1
+                ;;
+            *)
+                die "Unknown argument: $1. Please use --help for help."
+            ;;
+        esac
+        shift
+    done
+
+    rootfs_dir_host="$FC_BUILD_DIR"/rootfs
+    rootfs_dir_ctr="$CTR_FC_BUILD_DIR"/rootfs
+    rootfs_dir_host_mount="$FC_BUILD_DIR"/rootfs/mount
+    rootfs_dir_ctr_mount="$CTR_FC_BUILD_DIR"/rootfs/mount
+    ROOTFS_NAME="xenial.rootfs.ext4"
+    ROOTFS_PARTUUID_NAME="xenial.rootfs_with_partuuid.ext4"
+    create_dir "$rootfs_dir_host_mount"
+
+    # TODO: merge changes in vmm-reference
+    recipe_url="https://raw.githubusercontent.com/dianpopa/vmm-reference/rootfs_fc/resources/disk/make_rootfs.sh"
+    run_devctr \
+        --user "$(id -u):$(id -g)" \
+        --workdir "$rootfs_dir_ctr" \
+        -- /bin/bash -c "curl -LO "$recipe_url""
+
+    # TODO: delete this line
+    # cp /repos/firecracker/vmm-reference/resources/disk/make_rootfs.sh "$FC_BUILD_DIR"/rootfs
+
+    run_devctr \
+        --privileged \
+        --workdir "$rootfs_dir_ctr" \
+        -- /bin/bash -c "chmod +x make_rootfs.sh && NODEB=1 ./make_rootfs.sh -w "$rootfs_dir_ctr" -o "$ROOTFS_NAME" -f "xenial" -s "500M" -n" || die "Error while building rootfs!"
+
+    resources_dir_ctr="$CTR_FC_ROOT_DIR/resources/tests"
+    run_devctr \
+        --privileged \
+        --workdir "$FC_DEVCTR_DIR" \
+        -- /bin/bash -c "source "$CTR_FC_ROOT_DIR/resources/tests/setup_rootfs.sh" && create_basic_rootfs "$rootfs_dir_ctr" "$resources_dir_ctr" "$rootfs_dir_ctr/$ROOTFS_NAME" "xenial"" || die "Error while building rootfs!"
+
+    say "Successfully built rootfs!"
+    say "Rootfs image binary and private key placed in $rootfs_dir_host/$ROOTFS_NAME and $rootfs_dir_host/$ROOTFS_NAME/ssh/id_rsa, respectively!"
+
+    if [ -n "$PARTUUID" ]; then
+        say "Now creating partuuid enabled rootfs..."
+
+        run_devctr \
+        --privileged \
+        --workdir "$FC_DEVCTR_DIR" \
+        -- /bin/bash -c "source "$CTR_FC_ROOT_DIR/resources/tests/setup_rootfs.sh" && create_partuuid_rootfs "$rootfs_dir_ctr/$ROOTFS_NAME" "$rootfs_dir_ctr/$ROOTFS_PARTUUID_NAME"" || die "Error while building partuuid enabled root!"
+
+        label=$(blkid "$rootfs_dir_host/$ROOTFS_PARTUUID_NAME" | cut -d ' ' -f 2 | cut -d '=' -f 2)
+        say "Created partuuid enabled disk with partition label: $label!"
+        say "Rootfs partuuid image binary placed in: $rootfs_dir_host/$ROOTFS_PARTUUID_NAME"
+    fi
 }
 
 main() {
