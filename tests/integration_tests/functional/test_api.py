@@ -929,9 +929,9 @@ def test_api_vsock(test_microvm_with_api):
     assert test_microvm.api_session.is_status_no_content(response.status_code)
 
 
-def test_api_balloon(test_microvm_with_ssh_and_balloon):
+def test_api_balloon(test_microvm_with_api):
     """Test balloon related API commands."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
     test_microvm.basic_config()
 
@@ -1020,9 +1020,9 @@ def test_api_balloon(test_microvm_with_ssh_and_balloon):
     assert test_microvm.api_session.is_status_bad_request(response.status_code)
 
 
-def test_get_full_config(test_microvm_with_ssh_and_balloon):
+def test_get_full_config(test_microvm_with_api):
     """Configure microVM with all resources and get configuration."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
 
     expected_cfg = {}
 

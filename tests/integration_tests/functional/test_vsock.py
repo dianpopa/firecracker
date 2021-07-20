@@ -33,13 +33,13 @@ TEST_WORKER_COUNT = 10
 
 
 def test_vsock(
-        test_microvm_with_ssh,
+        test_microvm_with_api,
         network_config,
         bin_vsock_path,
         test_fc_session_root_path
 ):
     """Vsock tests. See the module docstring for a high-level description."""
-    vm = test_microvm_with_ssh
+    vm = test_microvm_with_api
     vm.spawn()
 
     vm.basic_config()
@@ -121,13 +121,13 @@ def negative_test_host_connections(vm, uds_path, blob_path, blob_hash):
 
 
 def test_vsock_epipe(
-        test_microvm_with_ssh,
+        test_microvm_with_api,
         network_config,
         bin_vsock_path,
         test_fc_session_root_path
 ):
     """Vsock negative test to validate SIGPIPE/EPIPE handling."""
-    vm = test_microvm_with_ssh
+    vm = test_microvm_with_api
     vm.spawn()
 
     vm.basic_config()

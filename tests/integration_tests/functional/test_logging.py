@@ -71,50 +71,50 @@ def check_log_message_format(log_str, instance_id, level, show_level,
         assert tag_level_no <= configured_level_no
 
 
-def test_no_origin_logs(test_microvm_with_ssh):
+def test_no_origin_logs(test_microvm_with_api):
     """Check that logs do not contain the origin (i.e file and line number)."""
     _test_log_config(
-        microvm=test_microvm_with_ssh,
+        microvm=test_microvm_with_api,
         show_level=True,
         show_origin=False
     )
 
 
-def test_no_level_logs(test_microvm_with_ssh):
+def test_no_level_logs(test_microvm_with_api):
     """Check that logs do not contain the level."""
     _test_log_config(
-        microvm=test_microvm_with_ssh,
+        microvm=test_microvm_with_api,
         show_level=False,
         show_origin=True
     )
 
 
-def test_no_nada_logs(test_microvm_with_ssh):
+def test_no_nada_logs(test_microvm_with_api):
     """Check that logs do not contain either level or origin."""
     _test_log_config(
-        microvm=test_microvm_with_ssh,
+        microvm=test_microvm_with_api,
         show_level=False,
         show_origin=False
     )
 
 
-def test_info_logs(test_microvm_with_ssh):
+def test_info_logs(test_microvm_with_api):
     """Check output of logs when minimum level to be displayed is info."""
-    _test_log_config(microvm=test_microvm_with_ssh)
+    _test_log_config(microvm=test_microvm_with_api)
 
 
-def test_warn_logs(test_microvm_with_ssh):
+def test_warn_logs(test_microvm_with_api):
     """Check output of logs when minimum level to be displayed is warning."""
     _test_log_config(
-        microvm=test_microvm_with_ssh,
+        microvm=test_microvm_with_api,
         log_level='Warning'
     )
 
 
-def test_error_logs(test_microvm_with_ssh):
+def test_error_logs(test_microvm_with_api):
     """Check output of logs when minimum level of logs displayed is error."""
     _test_log_config(
-        microvm=test_microvm_with_ssh,
+        microvm=test_microvm_with_api,
         log_level='Error'
     )
 
