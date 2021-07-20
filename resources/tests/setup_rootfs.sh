@@ -55,12 +55,12 @@ EOF
     chroot "$DISKMNT" /bin/bash -c "export LC_ALL=C; export LANG=C.UTF-8; passwd -d root"
 
     # Copy init file sending the boot done signal.
-    echo "$RESOURCE_DIR/init.c"
     mv "$DISKMNT/sbin/init" "$DISKMNT/sbin/openrc-init"
     gcc -o "$DISKMNT/sbin/init" "$RESOURCE_DIR/init.c"
 
     # Copy fillmem tool used by balloon tests.
     gcc -o "$DISKMNT/sbin/fillmem" "$RESOURCE_DIR/fillmem.c"
+    gcc -o "$DISKMNT/sbin/readmem" "$RESOURCE_DIR/readmem.c"
 
     echo "deb http://archive.ubuntu.com/ubuntu $FLAVOUR-updates main" >> "$DISKMNT/etc/apt/sources.list"
     echo "deb http://archive.ubuntu.com/ubuntu $FLAVOUR universe" >> "$DISKMNT/etc/apt/sources.list"
