@@ -1463,7 +1463,7 @@ cmd_install() {
 #
 cmd_build_rootfs() {
     # Default size for the resulting rootfs image is 1G.
-    SIZE="1000M"
+    SIZE="500M"
 
     # Parse the command line args.
     while [ $# -gt 0 ]; do
@@ -1486,32 +1486,31 @@ cmd_build_rootfs() {
 
     rootfs_dir_host="$FC_BUILD_DIR"/rootfs
     rootfs_dir_ctr="$CTR_FC_BUILD_DIR"/rootfs
-    rootfs_dir_host_mount="$FC_BUILD_DIR"/rootfs/mount
-    rootfs_dir_ctr_mount="$CTR_FC_BUILD_DIR"/rootfs/mount
-    ROOTFS_NAME="xenial.rootfs.ext4"
-    ROOTFS_PARTUUID_NAME="xenial.rootfs_with_partuuid.ext4"
-    create_dir "$rootfs_dir_host_mount"
+    flavour="bionic"
+    ROOTFS_NAME="$flavour.rootfs.ext4"
+    ROOTFS_PARTUUID_NAME="$flavour.rootfs_with_partuuid.ext4"
+    create_dir "$rootfs_dir_host"
 
     # TODO: merge changes in vmm-reference
-    recipe_url="https://raw.githubusercontent.com/dianpopa/vmm-reference/rootfs_fc/resources/disk/make_rootfs.sh"
-    run_devctr \
-        --user "$(id -u):$(id -g)" \
-        --workdir "$rootfs_dir_ctr" \
-        -- /bin/bash -c "curl -LO "$recipe_url""
+#    recipe_url="https://raw.githubusercontent.com/dianpopa/vmm-reference/rootfs_fc/resources/disk/make_rootfs.sh"
+#    run_devctr \
+#        --user "$(id -u):$(id -g)" \
+#        --workdir "$rootfs_dir_ctr" \
+#        -- /bin/bash -c "curl -LO "$recipe_url""
 
     # TODO: delete this line
-    # cp /repos/firecracker/vmm-reference/resources/disk/make_rootfs.sh "$FC_BUILD_DIR"/rootfs
+     cp /repos/firecracker/vmm-reference/resources/disk/make_rootfs.sh "$FC_BUILD_DIR"/rootfs
 
     run_devctr \
         --privileged \
-        --workdir "$rootfs_dir_ctr" \
-        -- /bin/bash -c "chmod +x make_rootfs.sh && NODEB=1 ./make_rootfs.sh -w "$rootfs_dir_ctr" -o "$ROOTFS_NAME" -f "xenial" -s "500M" -n" || die "Error while building rootfs!"
+        --workdir "$FC_DEVCTR_DIR" \
+        -- /bin/bash -c "chmod +x "$CTR_FC_BUILD_DIR/rootfs/make_rootfs.sh" && NODEB=1 "$CTR_FC_BUILD_DIR/rootfs/make_rootfs.sh" -w "$rootfs_dir_ctr" -o "$ROOTFS_NAME" -f "$flavour" -s "$SIZE" -n" || die "Error while building rootfs!"
 
     resources_dir_ctr="$CTR_FC_ROOT_DIR/resources/tests"
     run_devctr \
         --privileged \
         --workdir "$FC_DEVCTR_DIR" \
-        -- /bin/bash -c "source "$CTR_FC_ROOT_DIR/resources/tests/setup_rootfs.sh" && create_basic_rootfs "$rootfs_dir_ctr" "$resources_dir_ctr" "$rootfs_dir_ctr/$ROOTFS_NAME" "xenial"" || die "Error while building rootfs!"
+        -- /bin/bash -c "source "$CTR_FC_ROOT_DIR/resources/tests/setup_rootfs.sh" && create_basic_rootfs "$rootfs_dir_ctr" "$resources_dir_ctr" "$rootfs_dir_ctr/$ROOTFS_NAME" "$flavour"" || die "Error while building rootfs!"
 
     say "Successfully built rootfs!"
     say "Rootfs image binary and private key placed in $rootfs_dir_host/$ROOTFS_NAME and $rootfs_dir_host/$ROOTFS_NAME/ssh/id_rsa, respectively!"
