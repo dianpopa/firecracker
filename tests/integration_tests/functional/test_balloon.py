@@ -3,7 +3,6 @@
 """Tests for guest-side operations on /balloon resources."""
 
 import logging
-import os
 import platform
 import subprocess
 import time
@@ -156,16 +155,12 @@ def _test_rss_memory_lower(test_microvm):
 
 
 # pylint: disable=C0103
-def test_rss_memory_lower(test_microvm_with_ssh_and_balloon, network_config):
+def test_rss_memory_lower(test_microvm_with_api, network_config):
     """Check inflating the balloon makes guest use less rss memory."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
     test_microvm.basic_config()
     _tap, _, _ = test_microvm.ssh_network_config(network_config, '1')
-    test_microvm.ssh_config['ssh_key_path'] = os.path.join(
-        test_microvm.fsfiles,
-        'debian.rootfs.id_rsa'
-    )
 
     # Add a memory balloon.
     response = test_microvm.balloon.put(
@@ -182,17 +177,13 @@ def test_rss_memory_lower(test_microvm_with_ssh_and_balloon, network_config):
 
 
 # pylint: disable=C0103
-def test_inflate_reduces_free(test_microvm_with_ssh_and_balloon,
+def test_inflate_reduces_free(test_microvm_with_api,
                               network_config):
     """Check that the output of free in guest changes with inflate."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
     test_microvm.basic_config()
     _tap, _, _ = test_microvm.ssh_network_config(network_config, '1')
-    test_microvm.ssh_config['ssh_key_path'] = os.path.join(
-        test_microvm.fsfiles,
-        'debian.rootfs.id_rsa'
-    )
 
     # Install deflated balloon.
     response = test_microvm.balloon.put(
@@ -226,17 +217,13 @@ def test_inflate_reduces_free(test_microvm_with_ssh_and_balloon,
 
 
 # pylint: disable=C0103
-def test_deflate_on_oom_true(test_microvm_with_ssh_and_balloon,
+def test_deflate_on_oom_true(test_microvm_with_api,
                              network_config):
     """Verify that setting the `deflate_on_oom` to True works correctly."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
     test_microvm.basic_config()
     _tap, _, _ = test_microvm.ssh_network_config(network_config, '1')
-    test_microvm.ssh_config['ssh_key_path'] = os.path.join(
-        test_microvm.fsfiles,
-        'debian.rootfs.id_rsa'
-    )
 
     # Add a deflated memory balloon.
     response = test_microvm.balloon.put(
@@ -267,17 +254,13 @@ def test_deflate_on_oom_true(test_microvm_with_ssh_and_balloon,
 
 
 # pylint: disable=C0103
-def test_deflate_on_oom_false(test_microvm_with_ssh_and_balloon,
+def test_deflate_on_oom_false(test_microvm_with_api,
                               network_config):
     """Verify that setting the `deflate_on_oom` to False works correctly."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
     test_microvm.basic_config()
     _tap, _, _ = test_microvm.ssh_network_config(network_config, '1')
-    test_microvm.ssh_config['ssh_key_path'] = os.path.join(
-        test_microvm.fsfiles,
-        'debian.rootfs.id_rsa'
-    )
 
     # Add a memory balloon.
     response = test_microvm.balloon.put(
@@ -305,16 +288,12 @@ def test_deflate_on_oom_false(test_microvm_with_ssh_and_balloon,
 
 
 # pylint: disable=C0103
-def test_reinflate_balloon(test_microvm_with_ssh_and_balloon, network_config):
+def test_reinflate_balloon(test_microvm_with_api, network_config):
     """Verify that repeatedly inflating and deflating the balloon works."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
     test_microvm.basic_config()
     _tap, _, _ = test_microvm.ssh_network_config(network_config, '1')
-    test_microvm.ssh_config['ssh_key_path'] = os.path.join(
-        test_microvm.fsfiles,
-        'debian.rootfs.id_rsa'
-    )
 
     # Add a deflated memory balloon.
     response = test_microvm.balloon.put(
@@ -377,16 +356,12 @@ def test_reinflate_balloon(test_microvm_with_ssh_and_balloon, network_config):
 
 
 # pylint: disable=C0103
-def test_size_reduction(test_microvm_with_ssh_and_balloon, network_config):
+def test_size_reduction(test_microvm_with_api, network_config):
     """Verify that ballooning reduces RSS usage on a newly booted guest."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
     test_microvm.basic_config()
     _tap, _, _ = test_microvm.ssh_network_config(network_config, '1')
-    test_microvm.ssh_config['ssh_key_path'] = os.path.join(
-        test_microvm.fsfiles,
-        'debian.rootfs.id_rsa'
-    )
 
     # Add a memory balloon.
     response = test_microvm.balloon.put(
@@ -422,16 +397,12 @@ def test_size_reduction(test_microvm_with_ssh_and_balloon, network_config):
 
 
 # pylint: disable=C0103
-def test_stats(test_microvm_with_ssh_and_balloon, network_config):
+def test_stats(test_microvm_with_api, network_config):
     """Verify that balloon stats work as expected."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
     test_microvm.basic_config()
     _tap, _, _ = test_microvm.ssh_network_config(network_config, '1')
-    test_microvm.ssh_config['ssh_key_path'] = os.path.join(
-        test_microvm.fsfiles,
-        'debian.rootfs.id_rsa'
-    )
 
     # Add a memory balloon with stats enabled.
     response = test_microvm.balloon.put(
@@ -502,16 +473,12 @@ def test_stats(test_microvm_with_ssh_and_balloon, network_config):
     )
 
 
-def test_stats_update(test_microvm_with_ssh_and_balloon, network_config):
+def test_stats_update(test_microvm_with_api, network_config):
     """Verify that balloon stats update correctly."""
-    test_microvm = test_microvm_with_ssh_and_balloon
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
     test_microvm.basic_config()
     _tap, _, _ = test_microvm.ssh_network_config(network_config, '1')
-    test_microvm.ssh_config['ssh_key_path'] = os.path.join(
-        test_microvm.fsfiles,
-        'debian.rootfs.id_rsa'
-    )
 
     # Add a memory balloon with stats enabled.
     response = test_microvm.balloon.put(

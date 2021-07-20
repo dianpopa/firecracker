@@ -203,13 +203,13 @@ def test_failing_filter(test_microvm_with_api):
     "vm_config_file",
     ["framework/vm_config.json"]
 )
-def test_invalid_bpf(test_microvm_with_ssh, vm_config_file):
+def test_invalid_bpf(test_microvm_with_api, vm_config_file):
     """Test that FC does not start, given an invalid binary filter."""
-    test_microvm = test_microvm_with_ssh
+    test_microvm = test_microvm_with_api
 
     # Configure VM from JSON. Otherwise, the test will error because
     # the process will be killed before configuring the API socket.
-    _config_file_setup(test_microvm_with_ssh, vm_config_file)
+    _config_file_setup(test_microvm_with_api, vm_config_file)
 
     bpf_path = os.path.join(test_microvm.path, 'bpf.out')
     file = open(bpf_path, "w")

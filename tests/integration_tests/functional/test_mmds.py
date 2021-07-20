@@ -13,9 +13,9 @@ def _assert_out(stdout, stderr, expected):
     assert stdout.read() == expected
 
 
-def test_custom_ipv4(test_microvm_with_ssh, network_config):
+def test_custom_ipv4(test_microvm_with_api, network_config):
     """Test the API for MMDS custom ipv4 support."""
-    test_microvm = test_microvm_with_ssh
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
 
     response = test_microvm.mmds.get()
@@ -113,9 +113,9 @@ def test_custom_ipv4(test_microvm_with_ssh, network_config):
     assert json.load(stdout) == data_store['latest']['meta-data']
 
 
-def test_json_response(test_microvm_with_ssh, network_config):
+def test_json_response(test_microvm_with_api, network_config):
     """Test the MMDS json response."""
-    test_microvm = test_microvm_with_ssh
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
 
     response = test_microvm.mmds.get()
@@ -184,9 +184,9 @@ def test_json_response(test_microvm_with_ssh, network_config):
     assert json.load(stdout) == 512
 
 
-def test_imds_response(test_microvm_with_ssh, network_config):
+def test_imds_response(test_microvm_with_api, network_config):
     """Test the MMDS IMDS response."""
-    test_microvm = test_microvm_with_ssh
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
 
     response = test_microvm.mmds.get()
@@ -270,9 +270,9 @@ def test_imds_response(test_microvm_with_ssh, network_config):
                                 ' unsupported type.')
 
 
-def test_larger_than_mss_payloads(test_microvm_with_ssh, network_config):
+def test_larger_than_mss_payloads(test_microvm_with_api, network_config):
     """Test MMDS content for payloads larger than MSS."""
-    test_microvm = test_microvm_with_ssh
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
 
     # The MMDS is empty at this point.
@@ -342,9 +342,9 @@ def test_larger_than_mss_payloads(test_microvm_with_ssh, network_config):
     _assert_out(stdout, stderr, lower_than_mss)
 
 
-def test_mmds_dummy(test_microvm_with_ssh):
+def test_mmds_dummy(test_microvm_with_api):
     """Test the API and guest facing features of the Micro MetaData Service."""
-    test_microvm = test_microvm_with_ssh
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
 
     # The MMDS is empty at this point.
@@ -395,9 +395,9 @@ def test_mmds_dummy(test_microvm_with_ssh):
     assert response.json() == dummy_json
 
 
-def test_guest_mmds_hang(test_microvm_with_ssh, network_config):
+def test_guest_mmds_hang(test_microvm_with_api, network_config):
     """Test the MMDS json response."""
-    test_microvm = test_microvm_with_ssh
+    test_microvm = test_microvm_with_api
     test_microvm.spawn()
 
     response = test_microvm.mmds.get()
