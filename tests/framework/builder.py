@@ -259,7 +259,7 @@ class MicrovmBuilder:
         """Create a clean VM in an initial state."""
         return self.build_from_artifacts("2vcpu_256mb",
                                          "vmlinux-4.14",
-                                         "ubuntu-16.04",
+                                         "ubuntu-18.04",
                                          None,
                                          net_ifaces=net_ifaces,
                                          diff_snapshots=diff_snapshots,
@@ -271,7 +271,7 @@ class MicrovmBuilder:
         """Create a clean VM in an initial state."""
         return self.build_from_artifacts("2vcpu_512mb",
                                          "vmlinux-4.14",
-                                         "ubuntu-16.04",
+                                         "ubuntu-18.04",
                                          None,
                                          net_ifaces=net_ifaces,
                                          diff_snapshots=diff_snapshots,

@@ -1041,7 +1041,7 @@ def test_get_full_config(test_microvm_with_api):
     }
     expected_cfg['drives'] = [{
         'drive_id': 'rootfs',
-        'path_on_host': '/debian.rootfs.ext4',
+        'path_on_host': '/xenial.rootfs.ext4',
         'is_root_device': True,
         'partuuid': None,
         'is_read_only': False,
