@@ -62,10 +62,20 @@ EOF
     gcc -o "$DISKMNT/sbin/fillmem" "$RESOURCE_DIR/fillmem.c"
     gcc -o "$DISKMNT/sbin/readmem" "$RESOURCE_DIR/readmem.c"
 
-    echo "deb http://archive.ubuntu.com/ubuntu $FLAVOUR-updates main" >> "$DISKMNT/etc/apt/sources.list"
-    echo "deb http://archive.ubuntu.com/ubuntu $FLAVOUR universe" >> "$DISKMNT/etc/apt/sources.list"
+    source="http://archive.ubuntu.com/ubuntu"
+    packets="iperf3 curl fio screen"
+    arch=$(uname -m)
+    if [ "$arch" = "x86_64" ]; then
+        packets="$packets cpuid"
+    elif [ "$arch" = "aarch64" ]; then
+        source="http://ports.ubuntu.com/ubuntu-ports"
+    fi
+    echo "deb $source $FLAVOUR-updates main" >> "$DISKMNT/etc/apt/sources.list"
+    echo "deb $source $FLAVOUR universe" >> "$DISKMNT/etc/apt/sources.list"
 
-    chroot "$DISKMNT" /bin/bash -c "apt-get update; apt-get -y install --no-install-recommends iperf3 cpuid curl"
+
+
+    chroot "$DISKMNT" /bin/bash -c "apt-get update; apt-get -y install --no-install-recommends $packets"
     umount "$DISKMNT"
 }
 
