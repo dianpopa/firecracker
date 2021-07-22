@@ -5,7 +5,9 @@
 import os
 import platform
 import pytest
+import json
 import framework.utils_cpuid as utils
+import host_tools.network as net_tools
 
 TOPOLOGY_STR = {1: "0", 2: "0,1", 16: "0-15"}
 PLATFORM = platform.machine()
@@ -82,6 +84,12 @@ def _check_cache_topology_arm(test_microvm, no_cpus):
     cache_files = ["level", "type", "size",
                    "coherency_line_size", "number_of_sets"]
 
+    ssh_connection = net_tools.SSHConnection(test_microvm.ssh_config)
+    _, stdout, stderr = ssh_connection.execute_command("/usr/local/bin/get_cache_info.sh")
+    assert stderr.read() == ""
+
+    GuestDict = json.loads(eval(stdout.read().strip()))
+    HostDict = {}
     for i in range(no_cpus):
         cpu_path = os.path.join(os.path.join(path, 'cpu{}'.format(i)), "cache")
         dirs = os.listdir(cpu_path)
@@ -94,10 +102,8 @@ def _check_cache_topology_arm(test_microvm, no_cpus):
                 absolute_cache_file = os.path.join(cache_path, cache_file)
                 with open(absolute_cache_file, 'r') as file:
                     host_val = file.readline().strip()
-                    guest_val = utils.read_guest_file(
-                        test_microvm, absolute_cache_file
-                    )
-                    assert host_val == guest_val
+                    HostDict[str(absolute_cache_file)] = str(host_val)
+    assert GuestDict == HostDict
 
 
 @pytest.mark.skipif(

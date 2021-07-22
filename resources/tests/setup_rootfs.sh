@@ -73,7 +73,9 @@ EOF
     echo "deb $source $FLAVOUR-updates main" >> "$DISKMNT/etc/apt/sources.list"
     echo "deb $source $FLAVOUR universe" >> "$DISKMNT/etc/apt/sources.list"
 
-
+    # Copy script used to retrieve cache info.
+    cp "$RESOURCE_DIR/get_cache_info.sh"  "$DISKMNT/usr/local/bin/"
+    chmod +x "$DISKMNT"/usr/local/bin/get_cache_info.sh
 
     chroot "$DISKMNT" /bin/bash -c "apt-get update; apt-get -y install --no-install-recommends $packets"
     umount "$DISKMNT"

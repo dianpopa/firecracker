@@ -79,10 +79,3 @@ def check_guest_cpuid_output(vm, guest_cmd, expected_header,
         "some keys in dictionary have not been found in the output: %s" \
         % expected_key_value_store
 
-
-def read_guest_file(vm, file):
-    """Parse cpuid output inside guest and match with expected one."""
-    ssh_connection = net_tools.SSHConnection(vm.ssh_config)
-    _, stdout, stderr = ssh_connection.execute_command("cat {}".format(file))
-    assert stderr.read() == ""
-    return stdout.read().strip()
