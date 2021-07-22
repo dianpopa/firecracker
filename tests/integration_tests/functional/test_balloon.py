@@ -101,23 +101,6 @@ def build_test_matrix(network_config, bin_cloner_path, logger):
     )
 
 
-def copy_util_to_rootfs(rootfs_path, util):
-    """Build and copy the 'memfill' program to the rootfs."""
-    subprocess.check_call(
-        "gcc ./host_tools/{util}.c -o {util}".format(util=util),
-        shell=True
-    )
-    subprocess.check_call("mkdir tmpfs", shell=True)
-    subprocess.check_call("mount {} tmpfs".format(rootfs_path), shell=True)
-    subprocess.check_call(
-        "cp {util} tmpfs/sbin/{util}".format(util=util),
-        shell=True
-    )
-    subprocess.check_call("rm {}".format(util), shell=True)
-    subprocess.check_call("umount tmpfs", shell=True)
-    subprocess.check_call("rmdir tmpfs", shell=True)
-
-
 def _test_rss_memory_lower(test_microvm):
     """Check inflating the balloon makes guest use less rss memory."""
     # Get the firecracker pid, and open an ssh connection.
@@ -563,7 +546,6 @@ def _test_balloon_snapshot(context):
                                    config=context.microvm,
                                    diff_snapshots=diff_snapshots)
     basevm = vm_instance.vm
-    copy_util_to_rootfs(root_disk.local_path(), 'fillmem')
 
     # Add a memory balloon with stats enabled.
     response = basevm.balloon.put(
@@ -769,9 +751,6 @@ def _test_memory_scrub(context):
         config=context.microvm
     )
     microvm = vm_instance.vm
-
-    copy_util_to_rootfs(root_disk.local_path(), 'fillmem')
-    copy_util_to_rootfs(root_disk.local_path(), 'readmem')
 
     # Add a memory balloon with stats enabled.
     response = microvm.balloon.put(
